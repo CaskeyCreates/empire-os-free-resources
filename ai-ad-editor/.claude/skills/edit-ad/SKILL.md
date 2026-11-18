@@ -16,7 +16,7 @@ uv run adeditor doctor
 uv run adeditor doctor --fix
 ```
 
-Run the second line only if the first one failed.
+Run the second line if the first one failed or warned. On a new install the first run shows `FAIL face model`; the fix downloads it. A warning that starts "No sound effects:" followed by a reason means the five sounds aren't made (yet, or because of a free plan or a missing key); a warning that says "The sound effects are switched off" means `ADEDITOR_NO_SOUNDS=1` is set. The fix makes them once per install, from five very short clips (3.3 seconds in all), so it spends very few ElevenLabs credits and takes a short while. On a free ElevenLabs plan it makes none, and that's fine; the ads just have no effects. To switch them off on purpose, add `ADEDITOR_NO_SOUNDS=1` to `.env` (the doctor's sound line then says to remove `ADEDITOR_NO_SOUNDS=1` from `.env` to have them back; the render says "No sound effects: ADEDITOR_NO_SOUNDS=1 is set.").
 
 The client's kit must be approved. If a command says it isn't, use the `new-client` skill's last step.
 
@@ -40,7 +40,13 @@ It prints what it would cut. Read the whole transcript yourself, with each word'
 uv run python -c "import json,sys; [print(i, round(w['start'],2), w['word']) for i,w in enumerate(json.load(open(sys.argv[1]))['words'])]" "clients/<client>/work/<stem>/transcript.json"
 ```
 
-The rules only find retakes that open alike and fillers, so read every line yourself. Strike any earlier try at a line the rules missed, and any talk that isn't the take: someone else speaking, a TV or radio in the background, or setup chatter before the first line and after the last. Add each to `clients/<client>/work/<stem>/strikes.json`: a strike is `{"from": <first word number>, "to": <last word number>, "why": "Claude: <short reason>"}`, using the numbers that command prints, and strikes can't overlap. Keep the last full take of each line.
+The rules only find retakes that open alike and fillers, so read every line yourself. Strike any earlier try at a line the rules missed, and any talk that isn't the take: someone else speaking, a TV or radio in the background, or setup chatter before the first line and after the last. Add each to `clients/<client>/work/<stem>/strikes.json`, one JSON object, never a bare list. If the file is missing, make it with this shape (the example strikes an invented earlier try at a line, words 12 to 19):
+
+```
+{"strikes": [{"from": 12, "to": 19, "why": "Claude: earlier try at the line about the free quote"}], "fillers": [], "approved": false}
+```
+
+A strike is `{"from": <first word number>, "to": <last word number>, "why": "Claude: <short reason>"}`, using the numbers that command prints, and strikes can't overlap. Keep the last full take of each line. Use your file edit tool to change the file, not a shell one-liner (`sed -i` differs between Mac and Linux, and a failed edit renders the old plan).
 
 Tell the person what will be cut, in a few plain lines. Ask: "Cut these?" Wait for a yes.
 
@@ -83,7 +89,7 @@ uv run adeditor speed <client> "<video>" 1.25
 
 ## 4. The plan
 
-Write `clients/<client>/work/<stem>/plan.json`. See `docs/plan-example.json` for the shape. Only these keys exist: `lockup`, `headings`, `key_words`, `broll`, `end_card`, `bed_offset_db`.
+Write `clients/<client>/work/<stem>/plan.json`. See `docs/plan-example.json` for the shape. Change it with your file edit tool, not a shell one-liner, and run `plan check` after every change. Only these keys exist: `lockup`, `headings`, `key_words`, `broll`, `end_card`, `bed_offset_db`, `graphics`, `sounds`, `flash`, `sfx_offset_db`.
 
 - `"lockup": "kit"` uses the client's approved lockup.
 - At most 2 headings. Each is a short run of the speaker's exact kept words, with `from` and `to` phrases saying where it shows. `to` is where it ends, at the start of that phrase, unless `to_end` is true, and then it ends at the end of that phrase plus `hold` seconds (default 0.7). If a phrase is said more than once, add `after` with an earlier phrase so `from` picks the occurrence after it. Without `to_end`, `to` is looked for only after the `from` match, so it's the first time that phrase is said after `from`, and it needs no `after` of its own. With `to_end`, `to` is looked for from the start of the `from` match, so a heading that shows while one phrase is said has the same phrase in `from` and `to`. Every phrase must match the kept words only. A word between asterisks, like `*worse.*`, is emphasised. Never invent or tidy the words; `plan check` rejects anything the speaker didn't say.
@@ -116,7 +122,7 @@ It makes a contact sheet from previews and downloads no full clips. Open the con
 - it shows anyone or anything in a bad light,
 - it looks made by AI.
 
-If nothing fits, search again in plainer words, or leave that line without B-roll. Then download only the one you picked (a stock clip; an own clip needs no download):
+Also skip any clip with words, numbers, logos or brand names in frame: a crop for another ratio can cut a word in half. If nothing fits, it may take two or three searches with different words; try plainer words, or leave that line without B-roll. Aim for B-roll about every 6 to 10 seconds, on lines that name something concrete. With no stock key set, put a graphic or the client's own clips (`clients/<client>/broll/own/`) where B-roll would go, and the take itself carries the rest. Then download only the one you picked (a stock clip; an own clip needs no download):
 
 ```
 uv run adeditor broll <client> "<video>" --get <id>
@@ -124,22 +130,73 @@ uv run adeditor broll <client> "<video>" --get <id>
 
 Use the id exactly as the contact sheet shows it, like `pixabay-1234567`, in the plan's `clip`.
 
+### Graphics
+
+A graphic is a short animated card drawn from what the speaker says. It fills the frame, captions included, then leaves. Use one where a line is a list, a sequence, a comparison, a number or a line worth stopping on, and no footage can show it. Each has `kind`, `from` and `to` (they work as they do for headings, with `to_end`, `hold` and `after`), and optional `title`, `ground` and `sfx`. Every example below is for an invented gutter cleaner.
+
+| Kind | Fits | Example |
+| --- | --- | --- |
+| `cycle` (3 to 6 items) | something that goes round and round | `"items": ["it clogs", "it overflows", "it floods the wall"]` |
+| `steps` (2 to 5 items) | what happens first, then next | `"items": ["we clear it", "we flush it", "we check the drain"]` |
+| `versus` (1 to 4 a side) | this, but that, with a `turn` phrase between the sides | `"left": ["a leaky gutter"], "turn": "but", "right": ["a dry house"]`, and optional `left_header` and `right_header` |
+| `stat` (one number) | a number the speaker says | `"value": "48", "label": "hours"` |
+| `checklist` (2 to 6 items) | things they get | `"items": ["a full clean", "a photo report"]` |
+| `quote` (one line) | the line worth stopping on | `"line": "we leave it spotless", "accent": "spotless"` |
+
+The caps:
+
+- Each lasts 2.5 to 8 seconds, so widen or narrow its `from` and `to`.
+- At most 4 in an ad in theory, but at most 1 starting in any 12 seconds, so a 20 to 30 second ad usually holds one or two, and a very short take may hold none and no headings. Tell the person that plainly rather than forcing more in.
+- A `stat` needs its number said after the opening offer's first 2.5 seconds; a number said inside the opening can't carry one.
+- Nothing in the first 0.4 seconds of a graphic, the opening offer's first 2.5 seconds or on the end card.
+- Never over B-roll, a heading or another graphic.
+- Captions hide under every graphic: its words are the speaker's own.
+
+The truth rule: every word on a graphic was said in the kept take, in that order, inside its window. The same goes for its title and the versus headers. A `stat` value is a number the speaker says there, as digits or words, and its unit (a `%`, a `$`) has to be said too. Drawn step numbers, the count-up and the "vs" mark aren't claims. If `plan check` says a phrase isn't said, use the runs of kept words it offers. Never tidy the words.
+
+Set `ground` to `"deep"` (dark) or `"paper"` (light) so the graphic contrasts with the take: a dark take gets `paper`, a bright one gets `deep`. Item text shrinks to fit down to 0.75 of its size, then `plan check` refuses it, so shorten that item. If it says a text would end on one word alone, pick a shorter or longer run of words. Keep graphics to the lines that earn one.
+
+Before you render, look at each graphic:
+
+```
+uv run adeditor preview <client> "<video>"
+```
+
+It saves one still per graphic at its fullest moment, to `clients/<client>/work/<stem>/preview/<ratio>-graphic-<n>.png`, and sends nothing anywhere. Open every one and look: the words read, nothing is cut off, the contrast is right. Fix the plan and preview again. The final stills show each graphic too, labelled "Graphic <n>".
+To look at one ratio only:
+
+```
+uv run adeditor preview <client> "<video>" --ratio 9x16
+```
+
+### Sounds and the flash
+
+Five small sound effects (cut, push, hit, whip, tick) sit under the voice on graphics, B-roll and heading changes, and a quick white shutter flash marks each visible punch-in and back. Both are on by default: `"sounds": true`, `"flash": true`, and `"sfx_offset_db": 0` (between -12 and 6) moves every effect together. The sounds are made once by the fix in step 0. If the install has none (a free ElevenLabs plan, no key, or `ADEDITOR_NO_SOUNDS=1` in `.env` or the environment), every render says "No sound effects: <reason>." and the ad renders without them. Say that to the person in one plain line; it isn't an error. To have them, remove `ADEDITOR_NO_SOUNDS=1` from `.env`.
+
 ## 5. Check the plan
 
 ```
 uv run adeditor plan check <client> "<video>"
 ```
 
-Fix everything it lists in `plan.json` and run it again until it's clean. Never work around it by moving a phrase to a time.
+Fix everything it lists in `plan.json` and run it again until it's clean. It also warns when more than 20 seconds pass with neither B-roll nor a graphic; add one where the speaker says something you can show. Never work around it by moving a phrase to a time.
 
 ## 6. Render and check
+
+A render takes minutes (about 3 to 4 for a 40 second take). Run it with a 10 minute timeout, or in the background and wait for it to finish; never a short timeout.
 
 ```
 uv run adeditor render <client> "<video>"
 uv run adeditor check <client> "<video>"
 ```
 
-Then open the stills in `clients/<client>/ads/<stem>/stills/` and look at them: the lockup reads, nothing covers the face, headings and B-roll sit right, the end card is clean, and no price or fine print shows. Fix a problem with a plan change, then render all three again and check again: the three ads share the cut and the plan, so the check fails any ad made before a change. Render one ratio alone only to retry one whose render stopped with an error (the `ad-notes` skill shows how). If the check says the music is too loud or can't be heard, change `bed_offset_db` in `plan.json` (between -3 and 3; 0 is the music 15 dB under the voice, negative is quieter, positive louder) and render again.
+Each ad prints one line, like `take (9x16).mp4: 0:26, -14.3 LUFS, peak -2.0 dBTP, the music 15.0 dB under the voice, 24 sound effects`.
+
+If a caption shows a word the transcriber misheard (a name, a product, a trade word), don't leave it on screen: add the word to `"keyterms"` in the client's `brand/kit.json`, transcribe again (`prepare`), and redo the strikes and the plan.
+
+The check may say, for the very start or end of the ad, "At the very start: listen that '<word>' begins cleanly (0:00)." Ask the person to play the first moment of the ad.
+
+Then open the stills in `clients/<client>/ads/<stem>/stills/` and look at them (they include each graphic, labelled "Graphic <n>"; the preview stills show them too): the lockup reads, nothing covers the face, headings, graphics and B-roll sit right, the end card is clean, and no price or fine print shows. Fix a problem with a plan change, then render all three again and check again: the three ads share the cut and the plan, so the check fails any ad made before a change. Render one ratio alone only to retry one whose render stopped with an error (the `ad-notes` skill shows how). If the check says the music is too loud or can't be heard, change `bed_offset_db` in `plan.json` (between -3 and 3; 0 is the music 15 dB under the voice, negative is quieter, positive louder) and render again.
 
 ## 7. Report
 

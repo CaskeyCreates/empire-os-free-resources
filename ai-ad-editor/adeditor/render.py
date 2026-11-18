@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from adeditor import brand, faces, media, mix, page, paths, plan, speed, verify
+from adeditor import brand, faces, media, mix, page, paths, plan, sounds, speed, verify
 from adeditor.cli import command
 from adeditor.paths import Job
 
@@ -51,7 +51,7 @@ def inputs(job: Job) -> str:
     kit = {k: v for k, v in kit.items() if k != "approved"} if isinstance(kit, dict) else kit
     music = kit.get("music") if isinstance(kit, dict) else None
     made_from = {"cut": _parsed(job.work / "cut.json"), "plan": _parsed(job.work / "plan.json"), "kit": kit,
-                 "speed": speed.current(job), "music": _file_hash(job.brand / music) if music else None}
+                 "speed": speed.current(job), "sounds": sounds.signature(), "music": _file_hash(job.brand / music) if music else None}
     return hashlib.sha256(json.dumps(made_from, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
@@ -79,12 +79,13 @@ def low_priority() -> dict:
 TIMED_OUT = re.compile(r"timeout of \d+ ?ms exceeded", re.I)
 
 
-def _hyperframes(step: list[str], folder: Path) -> None:
-    """Run one HyperFrames step on a page. A step that fails on a timeout is tried once more; any other
-    failure stops the render with the tail of what HyperFrames said."""
+def _hyperframes(step: list[str], folder: Path, env: dict | None = None) -> None:
+    """Run one HyperFrames step on a page, in `env` when given. A step that fails on a timeout is tried once
+    more; any other failure stops the render with the tail of what HyperFrames said."""
     cmd = [media.tool("npx"), "-y", HYPERFRAMES, *step]
     for attempt in (1, 2):
-        r = subprocess.run(cmd, cwd=folder, capture_output=True, encoding="utf-8", errors="replace", **low_priority())
+        r = subprocess.run(cmd, cwd=folder, capture_output=True, encoding="utf-8", errors="replace",
+                           **({"env": env} if env is not None else {}), **low_priority())
         if r.returncode == 0:
             return
         said = "\n".join(f"{r.stdout or ''}\n{r.stderr or ''}".strip().splitlines()[-20:])
@@ -141,6 +142,11 @@ def gate(job: Job) -> None:
         n = len(exc.errors)
         raise Refused(f"plan.json has {n} {'problem' if n == 1 else 'problems'}: run adeditor plan check {client} "
                       f"{video} to see {'it' if n == 1 else 'them'}.") from None
+    from adeditor import graphic_page  # imported here: graphic_page draws on the page module
+
+    too_long = graphic_page.fit_errors(job, plan.load(job)["graphics"])
+    if too_long:
+        raise Refused(f"A graphic in plan.json has text too long to fit: run adeditor plan check {client} {video} to see it.")
     face_map = job.work / "faces.json"
     if not face_map.exists():
         raise Refused(f"There's no face map for {video} yet: run adeditor cut {client} {video}.")
@@ -170,6 +176,12 @@ def render(job: Job, ratios=RATIOS) -> dict[str, Path]:
     # The ads are being made again, so the old review sheet no longer speaks for them; check writes a
     # new one. Until then the video isn't done (paths.done), even if a ratio fails part way.
     (job.ads / "review.html").unlink(missing_ok=True)
+    if not resolved["sounds"]:
+        manifest, off_reason = None, 'the plan turns them off ("sounds": false)'
+    else:
+        manifest, off_reason = sounds.available()
+    if not manifest:
+        print(f"No sound effects: {off_reason}.", flush=True)
     done = {}
     for ratio in ratios:
         print(f"Rendering {ratio.replace('x', ':')}.", flush=True)
@@ -185,22 +197,50 @@ def render(job: Job, ratios=RATIOS) -> dict[str, Path]:
         out = job.ads / f"{job.video.stem} ({ratio}).mp4"
         tmp = out.with_name(f"{out.stem}.part.mp4")
         try:
+            effects = ({"events": facts.get("events", []), "manifest": manifest, "offset_db": resolved["sfx_offset_db"],
+                        "name": f"effects-{ratio}"}
+                       if manifest else None)
             got = mix.mix(job.work / "aroll.mp4", bed, silent, tmp, facts["duration"], facts["end"][0],
-                          kit.get("music_bpm"), resolved["bed_offset_db"], stems_dir=job.work / "mix", words=words)
+                          kit.get("music_bpm"), resolved["bed_offset_db"], stems_dir=job.work / "mix", words=words,
+                          effects=effects)
             tmp.replace(out)
         except BaseException:
             tmp.unlink(missing_ok=True)
             if not any(job.ads.iterdir()):  # an empty ads folder would mark the video as done
                 job.ads.rmdir()
             raise
+        cues = got.get("cues") or []
+        on = bool(got.get("effects"))
+        why = None if on else (off_reason if not manifest else "the ad has no picture changes to sound")
         report[ratio] = {"window": facts["window"], "mode": facts["window"]["mode"], "warnings": facts["warnings"],
                          "duration": facts["duration"],
                          "end_start": facts["end"][0], "file": out.name, "lufs": got["lufs"],
                          "true_peak": got["true_peak"], "bed_median_db": got["bed_median_db"], "inputs": made_from,
-                         "mouth_covered": bool(facts.get("mouth_covered"))}
+                         "mouth_covered": bool(facts.get("mouth_covered")),
+                         "graphics": [{"n": g["n"], "full_at": g["full_at"]} for g in facts.get("graphics", [])],
+                         "sounds": {"on": on, "reason": why, "cues": cues, "clamped": got.get("clamped", 0),
+                                   "stem": f"effects-{ratio}.wav" if on else None,
+                                   **({"offset_db": resolved["sfx_offset_db"]} if on else {})}}
         report_path.write_text(json.dumps(report, indent=1), encoding="utf-8")
         done[ratio] = out
     return done
+
+
+def render_line(name: str, r: dict) -> str:
+    """One ad's line: its length, loudness, true peak, the music's level and its sound effects."""
+    line = f"{name}: {verify.clock(r['duration'])}, {r['lufs']:.1f} LUFS"
+    if r.get("true_peak") is not None:
+        line += f", peak {r['true_peak']:.1f} dBTP"
+    if r["bed_median_db"] is not None:
+        line += f", the music {r['bed_median_db']:.1f} dB under the voice"
+    sounds = r.get("sounds") or {}
+    cues = sounds.get("cues") or []
+    if sounds.get("on") and cues:
+        line += f", {len(cues)} sound effect{'' if len(cues) == 1 else 's'}"
+        offset = sounds.get("offset_db") or 0
+        if round(offset * 2) != 0:
+            line += f" {abs(round(offset * 2) / 2):g} dB {'quieter' if offset < 0 else 'louder'}"
+    return line
 
 
 def _args(p) -> None:
@@ -228,8 +268,7 @@ def render_cmd(ns):
     print(f"Done. The ads are in clients/{job.client}/ads/{job.video.stem}/:")
     for ratio, path in done.items():
         r = report[ratio]
-        under = f", the music {r['bed_median_db']:.1f} dB under the voice" if r["bed_median_db"] is not None else ""
-        print(f"  {path.name}: {verify.clock(r['duration'])}, {r['lufs']:.1f} LUFS{under}")
+        print(f"  {render_line(path.name, r)}")
     warnings = list(dict.fromkeys(w for ratio in done for w in report[ratio]["warnings"]))
     for w in warnings:
         print(f"Warning: {w}")

@@ -38,7 +38,8 @@ SLUG = re.compile(r"^[a-z0-9-]+$")
 GENERIC_FONTS = {"serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-sans-serif",
                  "ui-serif", "ui-monospace", "-apple-system", "blinkmacsystemfont", "segoe ui", "roboto", "helvetica",
                  "helvetica neue", "arial", "sans", "inherit", "initial", "unset", "apple color emoji",
-                 "segoe ui emoji", "segoe ui symbol", "noto color emoji", "emoji", "math", "var"}
+                 "segoe ui emoji", "segoe ui symbol", "noto color emoji", "emoji", "math", "var", "revert",
+                 "revert-layer"}
 # A family Google doesn't serve is matched by its generic class.
 MATCH = {"serif": "Libre Baskerville", "sans-serif": "Inter", "display": "DM Serif Display",
          "monospace": "JetBrains Mono"}
@@ -55,6 +56,17 @@ INK_MAX_SATURATION = 0.35
 FRAMEWORK_DEFAULTS = frozenset({
     "#0d6efd", "#6610f2", "#6f42c1", "#d63384", "#dc3545", "#fd7e14", "#ffc107", "#198754", "#20c997", "#0dcaf0",
     "#007bff", "#3b82f6", "#2563eb", "#0099ff", "#0073aa", "#2271b1"})
+# A custom property starting with one of these belongs to a CSS framework, not to the brand, however
+# its name reads (Bootstrap's --bs-primary-text-emphasis is a navy no Bootstrap site chose).
+FRAMEWORK_VAR_PREFIXES = ("--bs-", "--tw-", "--wp--preset--", "--wp-admin-", "--chakra-", "--mantine-", "--mdc-",
+                          "--swiper-")
+# A rule whose selector names one of these states styles an error or a notice, not the brand.
+# Shopify's own payment buttons are skipped the same way: their blues are the platform's, not the shop's.
+STATE_SELECTOR = re.compile(r"error|invalid|danger|success|valid|warning|alert|notice|shopify-payment", re.I)
+GUESS_NOTE = ("The colours are a guess from their stylesheets, so check them against the logo and buttons on "
+              "their site.")
+# The end card changes to the deep ground when the logo would read under this against the paper.
+LOGO_MIN_CONTRAST = 3.0
 MIN_CONTRAST = 4.5
 DEFAULT_PAPER = "#F7F5EF"
 DEFAULT_INK = "#1A1A1A"
@@ -337,28 +349,50 @@ def prefer_real(colours: list[str]) -> list[str]:
     return real or colours
 
 
+def without_framework_and_state(css: str) -> str:
+    """The css the saturated colours are counted in: no framework custom properties, and no rule whose selector
+    names a state (error, success, warning and the like)."""
+    prefixes = "|".join(re.escape(p) for p in FRAMEWORK_VAR_PREFIXES)
+    css = re.sub(rf"(?:{prefixes})[\w-]*\s*:\s*[^;}}{{]+;?", "", css)
+    return RULE.sub(lambda m: "" if STATE_SELECTOR.search(m.group(1)) else m.group(0), css)
+
+
 def pick_colours(css: str, meta: dict) -> dict:
-    """The brand's primary, a second brand colour if the site has one, and its everyday colours."""
+    """The brand's primary, a second brand colour if the site has one, its everyday colours, and whether the
+    primary is only a guess (no named brand colour and no theme-color)."""
     css = strip_comments(css)
-    counts = Counter(colours_in(css))
+    counts = Counter(colours_in(without_framework_and_state(css)))
+    # A custom property counts only when a rule uses it: var(--name), or var(--other) where --other is itself
+    # set to var(--name). A declared-but-unused one (a third-party widget's accent) is noise.
+    decls = VAR.findall(css)
+    refs = set(re.findall(r"var\(\s*(--[\w-]+)", css))
+    used = refs | {inner for n, v in decls if n in refs for inner in re.findall(r"var\(\s*(--[\w-]+)", v)}
     named = []
-    for name, value in VAR.findall(css):
+    for name, value in decls:
         c = norm_hex(value)
-        if c and re.search(r"brand|primary|accent|main|theme", name, re.I) and hls(c)[2] > 0.25:
+        if (c and name in used and not name.lower().startswith(FRAMEWORK_VAR_PREFIXES)
+                and re.search(r"brand|primary|accent|main|theme", name, re.I) and hls(c)[2] > 0.25):
             named.append((name.lower(), c))
-    saturated = [c for c, _ in counts.most_common() if hls(c)[2] > 0.35 and 0.18 < hls(c)[1] < 0.82]
     theme = norm_hex(meta.get("theme-color", "")) if meta.get("theme-color") else None
     theme = theme if theme and hls(theme)[2] > 0.25 else None
+    # A colour set in one custom property that nothing uses (an accessibility widget's focus ring) is noise, so
+    # it needs a second use to count; a property a rule reads through var() is a use.
+    outside = Counter(colours_in(VAR.sub(lambda m: m.group(0) if m.group(1) in used else "",
+                                         without_framework_and_state(css))))
+    saturated = [c for c, n in counts.most_common() if (n >= 2 or outside[c])
+                 and hls(c)[2] > 0.35 and 0.18 < hls(c)[1] < 0.82]
     firsts = [c for n, c in named if "primary" in n] + [c for n, c in named if "accent" not in n] + ([theme] if theme else [])
-    primary = (prefer_real(firsts + saturated) + [None])[0]
-    accents = prefer_real([c for n, c in named if "accent" in n] + saturated)
+    guessed = not named and not theme
+    pool = [c for c in saturated if c not in FRAMEWORK_DEFAULTS] if guessed else saturated  # a guess never lands on a framework blue
+    primary = (prefer_real(firsts + pool) + [None])[0]
+    accents = prefer_real([c for n, c in named if "accent" in n] + pool)
     accent = next((c for c in accents if primary and c != primary and abs(hls(c)[0] - hls(primary)[0]) > 0.04), None)
     base = []
     for selector, block in RULE.findall(css):
         if re.search(r"(^|[\s,])(body|html)\b|:root", selector.lower()):
             base += colours_in(block)
     everyday = base + [c for c, _ in counts.most_common(40)]
-    return {"primary": primary, "accent": accent, "everyday": everyday}
+    return {"primary": primary, "accent": accent, "everyday": everyday, "guessed": guessed}
 
 
 def derive_roles(css: str, meta: dict) -> dict:
@@ -388,6 +422,64 @@ def complete_roles(primary: str, accent: str, paper: str, ink: str) -> dict:
     roles = {"primary": primary, "deep": deep, "paper": paper, "accent": accent, "accent_dark": accent_dark,
              "highlight": highlight, "ink": ink}
     return {k: v.upper() for k, v in roles.items()}
+
+
+SVG_PAINT = re.compile(r"(?:fill|stroke)\s*[=:]\s*[\"']?\s*(#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|white|black)", re.I)
+
+
+def _svg_colour(token: str) -> tuple[int, int, int] | None:
+    t = token.strip().lower()
+    if t in ("white", "black"):
+        return (255, 255, 255) if t == "white" else (0, 0, 0)
+    if t.startswith("rgb"):
+        nums = re.findall(r"[\d.]+", t)[:3]
+        return tuple(min(255, round(float(n))) for n in nums) if len(nums) == 3 else None
+    c = norm_hex(t)
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) if c else None
+
+
+def logo_colour(path: Path | None) -> str | None:
+    """The colour of the logo where it's drawn (#rrggbb), or None when it can't be measured. A PNG or WebP is
+    averaged over its opaque pixels; an SVG over its fill and stroke colours. A picture with no transparent
+    pixels sits in its own box, so it has no colour of its own to measure."""
+    try:
+        if path is None or not path.is_file():
+            return None
+        if path.suffix.lower() == ".svg":
+            found = [c for c in map(_svg_colour, SVG_PAINT.findall(path.read_text(encoding="utf-8", errors="replace")))
+                     if c]
+            rgb = tuple(sum(c[i] for c in found) / len(found) for i in range(3)) if found else None
+        else:
+            from PIL import Image
+
+            with Image.open(path) as img:
+                img = img.convert("RGBA")
+                img.thumbnail((160, 160))
+                raw = img.tobytes()
+                pixels = [raw[i:i + 4] for i in range(0, len(raw), 4)]
+            solid = [p for p in pixels if p[3] >= 128]
+            if not solid or len(solid) == len(pixels):
+                return None
+            rgb = tuple(sum(p[i] for p in solid) / len(solid) for i in range(3))
+        return "#{:02x}{:02x}{:02x}".format(*(round(v) for v in rgb)) if rgb else None
+    except Exception:
+        return None
+
+
+def logo_vanishes_on_paper(colours: dict, logo_file: Path | None) -> bool:
+    """True when the logo would read under LOGO_MIN_CONTRAST on the paper, so wherever it sits on paper it's
+    drawn as a dark silhouette instead."""
+    ink = logo_colour(logo_file)
+    return bool(ink and contrast(ink, colours["paper"]) < LOGO_MIN_CONTRAST)
+
+
+def end_ground(colours: dict, logo_file: Path | None) -> str:
+    """"paper" or "deep": the ground the end card sits on. The logo always shows, so a logo that reads under
+    LOGO_MIN_CONTRAST against the paper (and does better on the deep ground) puts the card on the deep ground."""
+    ink = logo_colour(logo_file)
+    if ink and contrast(ink, colours["paper"]) < LOGO_MIN_CONTRAST and contrast(ink, colours["deep"]) > contrast(ink, colours["paper"]):
+        return "deep"
+    return "paper"
 
 
 def parse_hex(text) -> str | None:
@@ -435,16 +527,23 @@ def set_colours(client: str, primary=None, accent=None, paper=None, ink=None) ->
     if problems:
         raise ValueError(" ".join(problems) + " Nothing was changed.")
     kit["colours"] = colours
+    kit.pop("colours_note", None)  # the person has set them: they're no longer a guess
     kit["approved"] = False
     save(client, kit)
     write_swatch(client, kit)
     return kit
 
 
+def font_part(part: str) -> str:
+    """One comma-separated piece of a font-family value, cleaned: no !important, var( wrapping, brackets or quotes."""
+    part = re.sub(r"!\s*important", "", part, flags=re.I).replace("var(", "")
+    return part.replace("(", "").replace(")", "").strip().strip("'\"").strip()
+
+
 def family_of(value: str) -> str | None:
     for part in value.split(","):
-        name = part.strip().strip("'\"").strip()
-        if name and name.lower() not in GENERIC_FONTS and not name.startswith("var("):
+        name = font_part(part)
+        if name and not name.startswith("--") and name.lower() not in GENERIC_FONTS:
             return name
     return None
 
@@ -462,7 +561,7 @@ def font_roles(css: str) -> tuple[str | None, str | None, Counter, dict]:
             continue
         used[fam] += 1
         for part in m.group(1).split(","):
-            kind = CLASS_OF.get(part.strip().strip("'\"").lower())
+            kind = CLASS_OF.get(font_part(part).lower())
             if kind:
                 classes.setdefault(fam, kind)
         sel = selector.lower()
@@ -643,6 +742,7 @@ def build(client: str, url: str, name: str | None = None, fetch=None, problems: 
     css = "\n".join(css_parts)
 
     colours = derive_roles(css, page.meta)
+    guessed = pick_colours(css, page.meta)["guessed"]
     display, body_family, _, classes = font_roles(css)
     cache: dict = {}
     head = display or body_family
@@ -660,7 +760,7 @@ def build(client: str, url: str, name: str | None = None, fetch=None, problems: 
 
     host = urllib.parse.urlparse(final).hostname or client
     title = " ".join((name or page.meta.get("og:site_name") or page.title or host.removeprefix("www.")).split())[:80]
-    return finish_kit(client, out, title, final, colours, fonts, logo)
+    return finish_kit(client, out, title, final, colours, fonts, logo, GUESS_NOTE if guessed else None)
 
 
 def build_plain(client: str, url: str, name: str | None, fetch, out: Path) -> dict:
@@ -674,12 +774,15 @@ def build_plain(client: str, url: str, name: str | None, fetch, out: Path) -> di
     return finish_kit(client, out, title, url, colours, fonts, None)
 
 
-def finish_kit(client: str, out: Path, title: str, site: str, colours: dict, fonts: dict, logo: str | None) -> dict:
+def finish_kit(client: str, out: Path, title: str, site: str, colours: dict, fonts: dict, logo: str | None,
+               colours_note: str | None = None) -> dict:
     kit = {
         "name": title, "site": site, "colours": colours, "fonts": fonts, "logo": logo,
         "lockup": {"callout": "", "offer": [""], "detail": None, "button": "Learn more"},
         "keyterms": [], "music": None, "music_bpm": None, "approved": False,
     }
+    if colours_note:
+        kit["colours_note"] = colours_note
     try:  # a rebuild keeps what the person already set
         old = json.loads(kit_path(client).read_text(encoding="utf-8"))
         for key in ("lockup", "keyterms"):
@@ -691,6 +794,13 @@ def finish_kit(client: str, out: Path, title: str, site: str, colours: dict, fon
     save(client, kit)
     write_swatch(client, kit)
     return kit
+
+
+def font_source(font: dict) -> str:
+    """Where a font came from, for the swatch: its Google source, the family it was matched from, or a plain default."""
+    if font["source"] != "matched":
+        return font["source"]
+    return f"matched from {font['matched_from']}" if font.get("matched_from") else "a plain default, the site names no usable font"
 
 
 def write_swatch(client: str, kit: dict) -> Path:
@@ -707,13 +817,15 @@ def write_swatch(client: str, kit: dict) -> Path:
         f"<b>{role}</b><span>{c}</span></div>" for role, c in kit["colours"].items())
     c = kit["colours"]
     notes = "".join(f"<p class=note>{html.escape(f['note'])}</p>" for f in kit["fonts"].values() if f.get("note"))
-    logo = (f"<img class=logo src='{html.escape(kit['logo'])}' alt='logo'>" if kit["logo"]
+    ground = c[end_ground(c, brand_dir(client) / kit["logo"] if kit["logo"] else None)]
+    logo = (f"<img class=logo src='{html.escape(kit['logo'])}' alt='logo' style='background:{ground}'>" if kit["logo"]
             else "<p class=note>No logo found.</p>")
+    colours_note = f"<p class=note>{html.escape(kit['colours_note'])}</p>" if kit.get("colours_note") else ""
     offer = next((line.strip() for line in (kit.get("lockup") or {}).get("offer", []) if line and line.strip()), "")
     sample = html.escape(f"{kit['name']}: {offer or 'Your offer line goes here'}")
     body_family = html.escape(kit["fonts"]["body"]["family"])
     families = " · ".join(
-        f"{role}: {font['family']} ({'matched from ' + font['matched_from'] if font['source'] == 'matched' else font['source']})"
+        f"{role}: {font['family']} ({font_source(font)})"
         for role, font in kit["fonts"].items())
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{html.escape(kit['name'])} brand kit</title>
@@ -731,7 +843,7 @@ h1{{font:700 28px display,serif}} .chips{{display:flex;flex-wrap:wrap;gap:12px;m
 <p class=body>The spoken word is <b style="color:{c['highlight']}">highlighted</b>.</p></div>
 <div class=card style="background:{c['paper']};color:{c['ink']}"><div class=display style="color:{c['primary']}">{sample}</div>
 <p class=body><span style="color:{c['accent_dark']};font-style:italic">An eyebrow in italic</span> and body text in {body_family}.</p></div>
-{logo}{notes}</body></html>
+{logo}{colours_note}{notes}</body></html>
 """
     path = brand_dir(client) / "swatch.html"
     path.write_text(page, encoding="utf-8")
@@ -786,6 +898,8 @@ def client_cmd(ns):
                     print(f"Made {kit['name']}'s kit with plain colours and fonts for now.")
             else:
                 print(f"Read {kit['name']} from {kit['site']}.")
+                if kit.get("colours_note"):
+                    print(kit["colours_note"])
             print(f"Look at clients/{ns.client}/brand/swatch.html, then set the lockup and run: adeditor client approve {ns.client}")
             for font in kit["fonts"].values():
                 if font["note"]:

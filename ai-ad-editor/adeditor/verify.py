@@ -9,6 +9,7 @@ fingerprint), its differences and the ones accepted, so a yes is only ever for t
 import difflib
 import hashlib
 import json
+import re
 import string
 from dataclasses import asdict, dataclass, field
 
@@ -41,8 +42,14 @@ class Report:
         return asdict(self)
 
 
+_BASE_SYMBOLS = ((r"\$\s*", "dollars"), (r"\u00a3\s*", "pounds"), (r"\u20ac\s*", "euros"), (r"(?<![A-Za-z])R", "rand"))
+
+
 def _base(text: str) -> list[str]:
     """Tokens of one word or phrase, before number words are merged."""
+    # a currency symbol is its word after the number, as _spoken reads it: "$500 off" is "500 dollars off"
+    for symbol, name in _BASE_SYMBOLS:
+        text = re.sub(symbol + r"(\d[\d,]*(?:\.\d+)?)", r"\1 " + name + " ", text)
     text = text.lower()
     for curly, straight in _QUOTES.items():
         text = text.replace(curly, straight)
@@ -83,12 +90,144 @@ def normalise(text: str) -> list[str]:
     return [tok for tok, _ in _merge([(tok, {0}) for tok in _base(text)])]
 
 
+# Numbers a graphic shows ("$7,500", "90%", "3x") against the numbers the speaker said.
+_SMALL = {w: n for n, w in enumerate(_UNITS)}
+_TENS_VALUE = {w: 20 + 10 * n for n, w in enumerate(_TENS)}
+_SCALES = {"thousand": 1_000, "million": 1_000_000}
+_SPOKEN = {"%": ("percent",), "x": ("times", "x"), "$": ("dollars", "dollar", "bucks"), "r": ("rand",),
+           "\u00a3": ("pounds", "pound"), "\u20ac": ("euros", "euro")}
+_SYMBOLS = ((r"\$", "dollars"), (r"\u00a3", "pounds"), (r"\u20ac", "euros"), (r"\bR(?=\s*\d)", "rand"))
+_SHOWN = re.compile(r"([$\u00a3\u20ac]|r)?\s*(\d[\d,]*(?:\.\d+)?)\s*(%|x|k|m)?", re.I)
+
+
+def number_value(shown: str) -> float | None:
+    """The value of a number as shown ("$7,500" is 7500, "90%" 90, "3x" 3, "R1.5m" 1500000), or None."""
+    m = _SHOWN.fullmatch(str(shown).strip())
+    if not m:
+        return None
+    value = float(m.group(2).replace(",", ""))
+    return value * {"k": 1_000, "m": 1_000_000}.get((m.group(3) or "").lower(), 1)
+
+
+def number_units(shown: str) -> tuple[str, ...]:
+    """The spoken words that carry a shown number's symbol ("%" is percent, "$" dollars, "x" times, "R" rand,
+    pounds, euros), or () when it has none. A "k" or "m" suffix has no spoken word of its own."""
+    m = _SHOWN.fullmatch(str(shown).strip())
+    if not m:
+        return ()
+    for symbol in (m.group(1), m.group(3)):
+        if symbol and symbol.lower() in _SPOKEN:
+            return _SPOKEN[symbol.lower()]
+    return ()
+
+
+_LONE = {"$": "$", "\u00a3": "\u00a3", "\u20ac": "\u20ac", "R": "R"}
+
+
+def _texts(words: list[dict]) -> list[str]:
+    """The words' texts, a lone currency symbol joined to the number word after it ("R" "5,000" is "R5,000")."""
+    texts = [_text(w) for w in words]
+    for i in range(len(texts) - 1):
+        if texts[i].strip() in _LONE and re.match(r"\d", texts[i + 1].strip()):
+            texts[i], texts[i + 1] = "", texts[i].strip() + texts[i + 1].strip()
+    return texts
+
+
+def _spoken(words: list[dict]) -> list[tuple[str, int]]:
+    """Lower-case tokens of the words with the index of the word each came from; "%" is "percent", a
+    currency symbol is its word after the number ("$7,500" is "7500 dollars"), also when the transcript
+    splits it into two words ("R" "5,000"), and a comma between digit groups is dropped. A word that ends
+    in any punctuation (a comma, full stop, ellipsis, dash, bracket or quote; "%" and currency symbols
+    excepted), and a word that is only punctuation, is followed by a "|" token: a number never runs across
+    a pause."""
+    texts = _texts(words)
+    out = []
+    for i, raw in enumerate(texts):
+        text = raw
+        for symbol, name in _SYMBOLS:
+            text = re.sub(symbol + r"\s*(\d[\d,]*(?:\.\d+)?)", r"\1 " + name + " ", text)
+        text = re.sub(r"(?<=\d),(?=\d{3})", "", text.lower().replace("%", " percent "))
+        out += [(tok, i) for tok in re.findall(r"\d+(?:\.\d+)?|[a-z]+", text)]
+        end = raw.strip()[-1:]
+        if end and not end.isalnum() and end not in "%$\u00a3\u20ac":
+            out.append(("|", i))
+    return out
+
+
+def _word_number(toks: list[tuple[str, int]], i: int) -> tuple[float, int] | None:
+    """A number spoken in words from token i: (value, next token), or None. "a hundred" is 100."""
+    total = current = 0
+    last = None
+    j = i
+    if toks[j][0] == "a" and j + 1 < len(toks) and toks[j + 1][0] in ("hundred", *_SCALES):
+        current, last, j = 1, "small", j + 1
+    while j < len(toks):
+        w = toks[j][0]
+        # a digit follows "hundred" or a magnitude only as the three digits that complete it ("7 thousand 500");
+        # a bare "3" there is its own count ("five hundred 3 clients")
+        if w[0].isdigit() and (last is None or (last == "scale" and len(w) == 3 and w.isdigit())):
+            current, last = current + float(w), "digit"
+        elif w in _SMALL and (last in (None, "hundred", "scale", "and") or (last == "tens" and 1 <= _SMALL[w] <= 9)):
+            current, last = current + _SMALL[w], "small"
+        elif w in _TENS_VALUE and last in (None, "hundred", "scale", "and"):
+            current, last = current + _TENS_VALUE[w], "tens"
+        elif w == "hundred" and last in ("small", "tens", "digit") and current < 100:
+            current, last = current * 100, "hundred"
+        elif w in _SCALES and last in ("small", "tens", "hundred", "digit"):
+            total, current, last = total + current * _SCALES[w], 0, "scale"
+        elif (w == "and" and last in ("hundred", "scale") and j + 1 < len(toks)
+              and (toks[j + 1][0] in _SMALL or toks[j + 1][0] in _TENS_VALUE)):
+            last = "and"
+        else:
+            break
+        j += 1
+    return (float(total + current), j) if j > i else None
+
+
+def _said_after(words: list[dict], start: float, end: float) -> list[tuple[float, float, list[str]]]:
+    """(value, onset, the up to two tokens right after the number, stopping at a pause) of every number
+    spoken by the words overlapping start to end, as digits or words."""
+    inside = [w for w in words if float(w["end"]) > start and float(w["start"]) < end]
+    toks = _spoken(inside)
+    out, i = [], 0
+    while i < len(toks):
+        tok, at = toks[i]
+        got = _word_number(toks, i)
+        if got is None:
+            i += 1
+            continue
+        (value, i) = got
+        after = []
+        for t, _ in toks[i:i + 2]:
+            if t == "|":
+                break
+            after.append(t)
+        out.append((value, float(inside[at]["start"]), after))
+    return out
+
+
+def _said(words: list[dict], start: float, end: float) -> list[tuple[float, float]]:
+    """(value, onset) of every number spoken by the words overlapping start to end, as digits or words."""
+    return [(v, t) for v, t, _ in _said_after(words, start, end)]
+
+
+def numbers_said(words: list[dict], start: float, end: float) -> list[float]:
+    """The values of the numbers the words overlapping start to end say, as digits or as words."""
+    return [v for v, _ in _said(words, start, end)]
+
+
+def spoken_words(words: list[dict], start: float, end: float) -> set[str]:
+    """The lower-case tokens the words overlapping start to end say ("%" as percent)."""
+    inside = [w for w in words if float(w["end"]) > start and float(w["start"]) < end]
+    return {t for t, _ in _spoken(inside) if t != "|"}
+
+
 def _text(word: dict) -> str:
     return str(word.get("text", word.get("word", "")))
 
 
 def _tokens(words: list[dict]) -> list[tuple[str, set]]:
-    return _merge([(tok, {i}) for i, w in enumerate(words) for tok in _base(_text(w))])
+    return _merge([(tok, {i}) for i, text in enumerate(_texts(words)) for tok in _base(text)])
 
 
 def _distance(lo: float, hi: float, joins: list[float]) -> float | None:

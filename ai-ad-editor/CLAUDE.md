@@ -1,6 +1,6 @@
 # AI Ad Editor
 
-This folder turns a client's raw talking-head video into finished ads (9:16, 4:5 and 1:1) with the speaker's retakes cut out, the offer up front, a few headings in the speaker's own words, real B-roll, music under the voice and an end card. You drive it with the `adeditor` commands, and the person you're working with is not technical.
+This folder turns a client's raw talking-head video into finished ads (9:16, 4:5 and 1:1) with the speaker's retakes cut out, the offer up front, a few headings in the speaker's own words, real B-roll, motion graphics drawn from their words, a few sound effects, music under the voice and an end card. You drive it with the `adeditor` commands, and the person you're working with is not technical.
 
 ## What to do when the person asks
 
@@ -18,11 +18,18 @@ Run every command from this folder as `uv run adeditor ...`. A client lives in `
 - Never edit, move or delete anything in a client's `raw/` folder.
 - Never use AI-generated footage: no AI-generated faces, voices or deepfakes. B-roll is real footage only: Pixabay, Pexels or the client's own clips.
 - B-roll people show a situation. Never present them as the client's customers or as vouching for the offer, never show anyone in a bad light, and reject a clip with readable words that say something else. Never use a clip that shows a trademark, logo or brand, and never use any clip in a misleading way (Pixabay's licence).
-- Headings are the speaker's exact words. `plan check` enforces it.
+- Headings and every word on a graphic are the speaker's exact words. `plan check` enforces it.
+- Sound effects are made once per install, with the person's own ElevenLabs key once it's in `.env`, by the fix command below. If none are made (free plan, no key, or `ADEDITOR_NO_SOUNDS=1` in `.env` or the environment), every render says "No sound effects: <reason>." and the ad renders without them. That's not a failure.
 - No price, guarantee or fine print anywhere on the video. Those belong on the landing page.
 - Look at every contact sheet and every still before you decide or report. Read the image file; don't go by its name.
 - A note changes one thing, then all three ads are rendered again, since they share the cut, the plan and the kit. Render one ratio alone only to retry one whose render failed.
 - When anything fails, run `uv run adeditor doctor`, then explain the fix in plain words. Adding the fix flag to that command installs what it can (the `edit-ad` skill shows it).
+
+The fix command, which also makes the sounds:
+
+```
+uv run adeditor doctor --fix
+```
 
 ## How you talk to the person
 

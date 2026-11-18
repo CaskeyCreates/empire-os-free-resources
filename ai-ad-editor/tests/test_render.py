@@ -393,3 +393,104 @@ def test_what_an_ad_is_made_from_changes_with_the_cut_plan_kit_music_and_speed(a
     (job.brand / "music" / "bed.mp3").write_bytes(b"two")  # the same name, new music
     seen.add(render.inputs(job))
     assert len(seen) == 7
+
+
+def run_render(job, monkeypatch, mixed):
+    fake_hyperframes(monkeypatch, lambda step, n: None)
+
+    def fake_mix(voice, bed, silent, out, duration, end_start, bpm, bed_offset_db=0, **kw):
+        mixed.append(kw.get("effects"))
+        out.write_bytes(b"ad")
+        eff = kw.get("effects")
+        cues = [{"role": "cut", "event": "x", "at": 1.0, "start": 1.0, "gain_db": 6.0, "rate": 1.0, "clamped": True}] if eff else []
+        return {"voice_stem": None, "bed_stem": None, "lufs": -14.0, "true_peak": -1.6, "bed_median_db": None,
+                "effects": bool(eff), "cues": cues, "clamped": len(cues)}
+
+    monkeypatch.setattr(render.mix, "mix", fake_mix)
+    return render.render(job, ("1x1",))
+
+
+def test_render_without_sounds_still_renders(ad_job, monkeypatch, capsys):
+    from adeditor import sounds
+
+    job = job_for(ad_job)
+    plan_path = job.work / "plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["graphics"] = [{"kind": "checklist", "from": "all day", "to": "already telling", "to_end": True,
+                         "items": ["your back", "already telling"]}]
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setenv(sounds.SWITCH, "1")
+    mixed = []
+    done = run_render(job, monkeypatch, mixed)
+    assert done == {"1x1": job.ads / "take1 (1x1).mp4"} and mixed == [None]
+    assert "No sound effects: ADEDITOR_NO_SOUNDS=1 is set." in capsys.readouterr().out
+    entry = json.loads((job.work / "render.json").read_text(encoding="utf-8"))["1x1"]
+    assert entry["sounds"] == {"on": False, "reason": "ADEDITOR_NO_SOUNDS=1 is set", "cues": [], "clamped": 0, "stem": None}
+
+
+def test_render_places_sounds_and_records_them(ad_job, monkeypatch, capsys, tmp_path):
+    from adeditor import sounds
+
+    job = job_for(ad_job)
+    monkeypatch.setattr(sounds, "available", lambda: ({"cut": {}}, None))
+    plan_path = job.work / "plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["sfx_offset_db"] = 6
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    mixed = []
+    run_render(job, monkeypatch, mixed)
+    [eff] = mixed
+    facts = json.loads((job.work / "pages" / "1x1" / "page.json").read_text(encoding="utf-8"))
+    assert eff["events"] == facts["events"] and eff["offset_db"] == 6 and eff["manifest"] == {"cut": {}}
+    entry = json.loads((job.work / "render.json").read_text(encoding="utf-8"))["1x1"]
+    assert entry["sounds"]["on"] is True and entry["sounds"]["reason"] is None and entry["sounds"]["clamped"] == 1
+    assert entry["sounds"]["stem"] == "effects-1x1.wav" and eff["name"] == "effects-1x1"
+    assert entry["sounds"]["cues"][0]["clamped"] is True
+    assert "No sound effects" not in capsys.readouterr().out
+
+
+def test_a_plan_that_turns_sounds_off_says_so(ad_job, monkeypatch, capsys):
+    job = job_for(ad_job)
+    plan_path = job.work / "plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["sounds"] = False
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    mixed = []
+    run_render(job, monkeypatch, mixed)
+    assert mixed == [None] and "No sound effects: the plan turns them off" in capsys.readouterr().out
+
+
+def test_an_ad_made_without_sounds_is_out_of_date_once_they_exist(ad_job, monkeypatch, tmp_path):
+    from adeditor import sounds
+
+    job = job_for(ad_job)
+    monkeypatch.setenv(sounds.SWITCH, "1")
+    off = render.inputs(job)
+    monkeypatch.delenv(sounds.SWITCH)
+    assert render.inputs(job) != off or sounds.signature() == "off"
+    before = render.inputs(job)
+    sounds.folder().mkdir(parents=True, exist_ok=True)
+    (sounds.folder() / "cut.wav").write_bytes(b"x")
+    (sounds.folder() / "manifest.json").write_text(json.dumps({"cut": {"file": "cut.wav", "made": "2026-11-18"}}))
+    try:
+        assert render.inputs(job) != before
+    finally:
+        (sounds.folder() / "cut.wav").unlink()
+        (sounds.folder() / "manifest.json").unlink()
+
+
+def test_the_render_line_says_the_peak_and_the_effects():
+    r = {"duration": 26.0, "lufs": -14.3, "true_peak": -1.6, "bed_median_db": 15.0,
+         "sounds": {"on": True, "cues": [{}] * 8, "offset_db": 0.0}}
+    base = "take (9x16).mp4: 0:26, -14.3 LUFS, peak -1.6 dBTP, the music 15.0 dB under the voice"
+    assert render.render_line("take (9x16).mp4", r) == base + ", 8 sound effects"
+    quiet = {**r, "sounds": {**r["sounds"], "offset_db": -3.0}}
+    assert render.render_line("take (9x16).mp4", quiet) == base + ", 8 sound effects 3 dB quieter"
+    loud = {**r, "sounds": {**r["sounds"], "offset_db": 2.0}}
+    assert render.render_line("take (9x16).mp4", loud) == base + ", 8 sound effects 2 dB louder"
+    none = {**r, "sounds": {"on": False, "cues": [], "reason": "x"}}
+    assert render.render_line("take (9x16).mp4", none) == base
+    one = {**r, "sounds": {**r["sounds"], "cues": [{}]}}
+    assert render.render_line("take (9x16).mp4", one) == base + ", 1 sound effect"
+    half = {**r, "sounds": {**r["sounds"], "offset_db": -2.5}}
+    assert render.render_line("take (9x16).mp4", half) == base + ", 8 sound effects 2.5 dB quieter"

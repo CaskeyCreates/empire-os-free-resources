@@ -7,7 +7,7 @@ description: Apply the person's plain notes to an ad that's already been made. H
 
 A note changes one thing. Work out which ad it's about (ask if it's unclear), make that one change, render, check, look, report. Keep messages short and plain.
 
-Paths: `clients/<client>/work/<stem>/` holds `plan.json`, `strikes.json` and `transcript.json`. `<video>` is the raw file's path, in quotes.
+Paths: `clients/<client>/work/<stem>/` holds `plan.json`, `strikes.json` and `transcript.json`. `<video>` is the raw file's path, in quotes. Change `plan.json` and `strikes.json` with your file edit tool, not a shell one-liner, and run `plan check` after every change. A render takes minutes: run it with a 10 minute timeout, or in the background and wait for it.
 
 ## What each note becomes
 
@@ -18,6 +18,11 @@ Paths: `clients/<client>/work/<stem>/` holds `plan.json`, `strikes.json` and `tr
 | "Swap the shot on X" | a new B-roll search for that line |
 | "Different heading" | `headings` in `plan.json` |
 | "Put back the bit about X" | remove that strike from `strikes.json` |
+| "Quieter effects" | lower `sfx_offset_db` in `plan.json` by 3 |
+| "Louder clicks" | raise `sfx_offset_db` by 3 |
+| "No sound on that graphic" | that graphic's `"sfx": false` |
+| "No flash" | `"flash": false` |
+| "No effects at all" | `"sounds": false` |
 
 ### Faster or slower
 
@@ -33,6 +38,17 @@ Times move, so run `plan check` next.
 
 Set `"bed_offset_db"` in `plan.json`. The mix levels the music to 15 dB under the voice by itself, and 0 means exactly that. A positive number is louder (3 is 12 dB under), a negative number quieter (-3 is 18 dB under), and it can only go between -3 and 3. Try 1 or 2 at a time. The check wants the music 12 to 18 dB under the voice and will say if the note went too far; if it can't hear the music at all, check the music file has sound in it.
 
+### Sound effects and the flash
+
+`sfx_offset_db` moves every effect together, from -12 to 6 (default 0). "Quieter effects" lowers it by 3, and "louder clicks" raises it by 3. Gains stop at a ceiling, so a very quiet voice may not get louder; the check lists any effect that hit it, and you tell the person. "No sound on that graphic" sets `"sfx": false` on that graphic, "no flash" sets `"flash": false`, and "no effects at all" sets `"sounds": false`. If the render says "No sound effects: <reason>.", the install has none made yet, or they're switched off with `ADEDITOR_NO_SOUNDS=1` in `.env` (remove it to have them); say so plainly and offer to make them (a free ElevenLabs plan can't):
+
+```
+uv run adeditor doctor --fix
+```
+
+A note like "I don't like the click sound" is a request to remake one sound: delete `sounds/<role>.wav` (the roles are cut, push, hit, whip and tick) and run the same fix. It makes only the missing one, and the next ad uses it.
+
+
 ### Swap the shot
 
 Search again for that line only and look at the contact sheet image:
@@ -41,13 +57,21 @@ Search again for that line only and look at the contact sheet image:
 uv run adeditor broll <client> "<video>" "<what to find>"
 ```
 
-Pick with the same rules as the first time: content that matches the line, no readable words saying something else, no person as a customer or vouching for the offer, nothing in a bad light, nothing AI-made. Download the one you pick:
+Pick with the same rules as the first time (skip clips with words, numbers, logos or brand names in frame; it may take two or three searches with different words): content that matches the line, no readable words saying something else, no person as a customer or vouching for the offer, nothing in a bad light, nothing AI-made. Download the one you pick:
 
 ```
 uv run adeditor broll <client> "<video>" --get <id>
 ```
 
 Then change that B-roll's `clip` in `plan.json`.
+
+### A graphic note
+
+Edit that graphic in `plan.json`: its words must be the speaker's kept words, in order, inside its window, and its length stays 2.5 to 8 seconds. After the change, look at it before the full render:
+
+```
+uv run adeditor preview <client> "<video>"
+```
 
 ### Different heading
 

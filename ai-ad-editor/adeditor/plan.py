@@ -22,7 +22,9 @@ END_CARD = 3.2
 CARD_LEAD = 0.2  # the end card starts this long before speech ends
 DEFAULT_HOLD = 0.7
 BED_LIMIT = 3.0  # bed_offset_db: -3 is 18 dB under the voice, 0 is 15, +3 is 12
-KEYS = {"lockup", "headings", "key_words", "broll", "end_card", "bed_offset_db"}
+SFX_RANGE = (-12.0, 6.0)  # sfx_offset_db: every sound effect moves together, in dB
+KEYS = {"lockup", "headings", "key_words", "broll", "end_card", "bed_offset_db",
+        "graphics", "sounds", "flash", "sfx_offset_db"}
 
 
 class PlanError(Exception):
@@ -173,14 +175,30 @@ def _headings(items, kept: Kept, errors: list[str]) -> list[dict]:
         a = _where(kept, h, "from", label, errors, 0)
         b = _where(kept, h, "to", label, errors, _to_from(a, h))
         hold = _number(h.get("hold"), "hold", errors, label, DEFAULT_HOLD)
+        sfx = _sfx(h, label, errors)
         if a and b and isinstance(lines, list):
             start = a[2]
             end = round(b[3] + hold, 3) if h.get("to_end") else b[2]
             if end <= start:
                 errors.append(f"{label} would end at {end:.1f} s, before it starts at {start:.1f} s. Check its from and to.")
                 continue
-            out.append({"lines": [str(s) for s in lines], "start": start, "end": end})
+            out.append({"lines": [str(s) for s in lines], "start": start, "end": end, "sfx": sfx,
+                        "words": _said_words(kept, " ".join(lines), start)})
     return out
+
+
+def _said_words(kept: Kept, said: str, start: float) -> list[int]:
+    """The indices (into the cut's words) of the run of words a heading's text was resolved to: the first
+    match said at or after the heading's start, else the first match anywhere."""
+    first, at = None, 0
+    while (got := kept.find(said, at)) is not None:
+        idx = sorted({w for t in range(got[0], got[0] + got[1]) for w in kept.toks[t][1]})
+        if first is None:
+            first = idx
+        if kept.span(*got)[0] >= start - 0.05:
+            return idx
+        at = got[0] + 1
+    return first or []
 
 
 def _key_words(items, kept: Kept, errors: list[str]) -> list[dict]:
@@ -238,6 +256,7 @@ def _broll(items, job: Job, kept: Kept, errors: list[str]) -> list[dict]:
         into = _number(b.get("in"), "in", errors, label, 0.0)
         hold = _number(b.get("hold"), "hold", errors, label, DEFAULT_HOLD)
         y = _number(b.get("y"), "y", errors, label, 50)
+        sfx = _sfx(b, label, errors)
         if not 0 <= y <= 100:
             errors.append(f"{label}: y is a percentage from 0 to 100.")
         if not (a and e):
@@ -258,8 +277,16 @@ def _broll(items, job: Job, kept: Kept, errors: list[str]) -> list[dict]:
                               f"and the clip is only {length:.1f} s long.")
                 continue
         out.append({"clip": clip, "file": file, "in": into, "start": start, "end": end, "y": int(y),
-                    "why": str(b.get("why", "")), "_label": label})
+                    "why": str(b.get("why", "")), "sfx": sfx, "_label": label})
     return out
+
+
+def _sfx(spec: dict, label: str, errors: list[str]) -> bool:
+    value = spec.get("sfx", True)
+    if not isinstance(value, bool):
+        errors.append(f'{label}: "sfx" is true or false.')
+        return True
+    return value
 
 
 def _span_text(s: dict) -> str:
@@ -270,7 +297,8 @@ def _overlap(a: dict, b: dict) -> bool:
     return a["start"] < b["end"] and b["start"] < a["end"]
 
 
-def _check_timeline(headings: list[dict], broll: list[dict], cut: dict, errors: list[str]) -> None:
+def _check_timeline(headings: list[dict], broll: list[dict], cut: dict, errors: list[str],
+                    graphics: list[dict] = ()) -> None:
     ordered = sorted(broll, key=lambda b: b["start"])
     for a, b in zip(ordered, ordered[1:]):
         if b["start"] < a["end"]:
@@ -291,6 +319,17 @@ def _check_timeline(headings: list[dict], broll: list[dict], cut: dict, errors: 
     for (i, a), (j, b) in zip(enumerate(headings, 1), enumerate(headings[1:], 2)):
         if _overlap(a, b):
             errors.append(f"Heading {i} and heading {j} overlap. Only one heading shows at a time.")
+    from adeditor import graphic_plan  # imported here: graphic_plan uses this module's helpers
+
+    graphic_plan.check_room(list(graphics), headings, ordered, cut, errors)
+
+
+def _flag(raw: dict, name: str, errors: list[str]) -> bool:
+    value = raw.get(name, True)
+    if not isinstance(value, bool):
+        errors.append(f'"{name}" is true or false.')
+        return True
+    return value
 
 
 def load(job: Job) -> dict:
@@ -319,14 +358,22 @@ def load(job: Job) -> dict:
     if not 0 < end_card <= 10:
         errors.append("end_card is a length in seconds, more than 0 and at most 10.")
     bed = _number(raw.get("bed_offset_db"), "bed_offset_db", errors, "plan.json", 0.0)
-    _check_timeline(headings, broll, cut, errors)
+    sfx = _number(raw.get("sfx_offset_db"), "sfx_offset_db", errors, "plan.json", 0.0)
+    sounds, flash = _flag(raw, "sounds", errors), _flag(raw, "flash", errors)
+    from adeditor import graphic_plan  # imported here: graphic_plan uses this module's helpers
+
+    graphics = graphic_plan.resolve(raw.get("graphics", []), kept, cut, errors)
+    _check_timeline(headings, broll, cut, errors, graphics)
     if errors:
         raise PlanError(errors)
-    for b in broll:
+    for b in broll + graphics:
         del b["_label"]
     return {"lockup": lockup, "headings": headings, "key_words": key_words,
             "broll": sorted(broll, key=lambda b: b["start"]), "end_card": end_card,
-            "bed_offset_db": max(-BED_LIMIT, min(BED_LIMIT, bed))}
+            "bed_offset_db": max(-BED_LIMIT, min(BED_LIMIT, bed)),
+            "graphics": sorted(graphics, key=lambda g: g["start"]), "sounds": sounds, "flash": flash,
+            "sfx_offset_db": max(SFX_RANGE[0], min(SFX_RANGE[1], sfx)),
+            "warnings": graphic_plan.idle_warnings(broll, graphics, cut)}
 
 
 def format_table(r: dict, card_at: float) -> str:
@@ -335,6 +382,9 @@ def format_table(r: dict, card_at: float) -> str:
         rows.append((h["start"], f"heading to {h['end']:.2f} s", " ".join(h["lines"]).replace("*", "")))
     for b in r["broll"]:
         rows.append((b["start"], f"b-roll {b['clip']} to {b['end']:.2f} s", b["why"]))
+    for g in r.get("graphics", []):
+        rows.append((g["start"], f"graphic {g['kind']} to {g['end']:.2f} s", " | ".join(i["text"] for i in g["items"])
+                     or str(g.get("value") or (g.get("line") or {}).get("text") or "")))
     rows.append((card_at, "end card", f"{r['end_card']:.1f} s"))
     lines = [f"{'time':>8}  {'what':<28}  words"]
     lines += [f"{t:7.2f}s  {what:<28}  {words}" for t, what, words in sorted(rows, key=lambda x: x[0])]
@@ -359,6 +409,16 @@ def plan_cmd(ns):
         for e in exc.errors:
             print(f"- {e}", file=sys.stderr)
         return 1
+    from adeditor import graphic_page  # imported here: graphic_page uses this module's helpers
+
+    too_long = graphic_page.fit_errors(job, r["graphics"])  # every graphic in every ratio, as the page will set it
+    if too_long:
+        print(f"plan.json has {len(too_long)} {'problem' if len(too_long) == 1 else 'problems'}:", file=sys.stderr)
+        for e in too_long:
+            print(f"- {e}", file=sys.stderr)
+        return 1
     cut = json.loads((job.work / "cut.json").read_text(encoding="utf-8"))
     print(format_table(r, card_start(cut)))
+    for w in r["warnings"]:
+        print(f"Warning: {w}", file=sys.stderr)
     return 0

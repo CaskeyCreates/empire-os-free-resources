@@ -1,7 +1,7 @@
 import pytest
 from conftest import make_speech
 
-from adeditor import media, mix
+from adeditor import checks, media, mix
 
 # A voice of tones with pauses between them, as a take has between lines.
 PATTERN = [("s", 0.6)] + [("w", 1.3), ("s", 0.5), ("w", 0.9), ("s", 0.9)] * 5 + [("s", 0.4)]
@@ -185,3 +185,85 @@ def test_mix_measures_the_bed_once_per_ratio(tmp_path, take, monkeypatch):
     got = mix.mix(voice, pink(tmp_path, 40), silent, tmp_path / "ad.mp4", duration, speech - 0.2, None,
                   stems_dir=tmp_path / "mix", words=tone_words(PATTERN))
     assert len(calls) == 2 and got["bed_median_db"] == pytest.approx(15, abs=0.5)  # level, then the final reading
+
+
+def tick_file(tmp_path):
+    import numpy as np
+    import wave
+    rate, n = 48000, 14400
+    t = np.arange(n) / rate
+    x = 0.8 * np.sin(2 * np.pi * 2000 * t) * np.exp(-t * 60)
+    x[0] = 0.9
+    path = tmp_path / "tick.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(rate)
+        w.writeframes((x * 32767).astype("<i2").tobytes())
+    return path
+
+
+def _samples(path):
+    import subprocess
+
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "2", "-ar", "48000", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype="<f4").reshape(-1, 2)
+
+
+def _premix(files, out):
+    """The sum mix.mix feeds to its final loudnorm, written as 32-bit float."""
+    args = ["ffmpeg", "-y", "-v", "error"] + [a for f in files for a in ("-i", str(f))]
+    media.run([*args, "-filter_complex", mix.summed(len(files)), "-map", "[mix]", "-c:a", "pcm_f32le", str(out)])
+    return _samples(out)
+
+
+def test_effects_sit_beside_an_untouched_voice(tmp_path, take):
+    import numpy as np
+
+    voice, silent, speech, duration = take
+    manifest = {"tick": {"file": "tick.wav", "path": str(tick_file(tmp_path)), "transient": 0.0, "peak100_db": -14.0}}
+    events = [{"role": "tick", "event": "item", "at": 2.0, "sfx": True}, {"role": "tick", "event": "item", "at": 5.0, "sfx": True}]
+    bed = pink(tmp_path, 40)
+    words = tone_words(PATTERN)
+    plain = mix.mix(voice, bed, silent, tmp_path / "a.mp4", duration, speech - 0.2, None, stems_dir=tmp_path / "plain",
+                    words=words)
+    withfx = mix.mix(voice, bed, silent, tmp_path / "b.mp4", duration, speech - 0.2, None, stems_dir=tmp_path / "fx",
+                     words=words, effects={"events": events, "manifest": manifest, "offset_db": 0, "name": "effects-9x16"})
+    assert plain["effects"] is False and plain["cues"] == [] and withfx["effects"] is True and withfx["clamped"] == 0
+    assert withfx["effects_stem"] == tmp_path / "fx" / "effects-9x16.wav" and withfx["effects_stem"].is_file()
+    assert not list((tmp_path / "plain").glob("effects*"))
+    assert (tmp_path / "plain" / "voice.wav").read_bytes() == (tmp_path / "fx" / "voice.wav").read_bytes()
+    a, b = _samples(plain["bed_stem"]), _samples(withfx["bed_stem"])  # the effects don't touch the bed's ducking; two renders of one bed differ by a few samples, so a frame (1600) is allowed
+    m = min(len(a), len(b))
+    assert abs(len(a) - len(b)) <= 1600 and np.sqrt(((a[:m] - b[:m]) ** 2).mean()) < 0.05 * np.sqrt((a[:m] ** 2).mean())
+
+    fx = _samples(withfx["effects_stem"])
+    assert abs(np.abs(fx).max(axis=1).argmax() / 48000 - 2.0) <= 1 / 30
+    # the property: the pre-loudnorm mix with effects minus the one without is exactly the effects stem
+    base = _premix([withfx["voice_stem"], withfx["bed_stem"]], tmp_path / "pre0.wav")  # the same stems, so only the effects differ
+    full = _premix([withfx["voice_stem"], withfx["bed_stem"], withfx["effects_stem"]], tmp_path / "pre1.wav")
+    n = min(len(base), len(full), len(fx))
+    assert np.abs((full[:n] - base[:n]) - fx[:n]).max() < 1e-5
+    assert np.abs(fx).max() > 0.01  # and that difference isn't just zeros
+    # the bed still sits 15 dB under the voice with effects present
+    under = mix.bed_under_voice(withfx["voice_stem"], withfx["bed_stem"], words)["median_db"]
+    assert under == pytest.approx(15, abs=0.5) and withfx["bed_median_db"] == under
+    # the cue sits 16 LU under the voice's integrated loudness for a tick against a -14 dB peak100
+    [cue, _] = withfx["cues"]
+    voice_lufs, _ = mix.measure(withfx["voice_stem"])
+    assert cue["gain_db"] == pytest.approx(voice_lufs - 16 + 14, abs=0.01)
+    lufs, peak = mix.measure(tmp_path / "b.mp4")
+    assert lufs == pytest.approx(-14, abs=1) and peak <= -1.3
+
+
+def test_sharp_effects_leave_the_ad_under_1_7_dbtp_at_14_lufs(tmp_path, take):
+    voice, silent, speech, duration = take
+    manifest = {"cut": {"file": "tick.wav", "path": str(tick_file(tmp_path)), "transient": 0.0, "peak100_db": -30.0}}
+    events = [{"role": "cut", "event": "punch", "at": t, "sfx": True} for t in (1.0, 2.2, 3.4, 4.6, 5.8, 7.0)]
+    done = mix.mix(voice, pink(tmp_path, 40), silent, tmp_path / "c.mp4", duration, speech - 0.2, None,
+                   stems_dir=tmp_path / "fx", words=tone_words(PATTERN),
+                   effects={"events": events, "manifest": manifest, "offset_db": 6, "name": "effects"})
+    assert done["effects"] is True
+    lufs, peak = mix.measure(tmp_path / "c.mp4")
+    assert lufs == pytest.approx(-14, abs=0.5) and peak <= -1.7, (lufs, peak)
+    assert "TP=-2.0" in mix.FINAL_TARGET and checks.PEAK_MAX == -1.3  # Ruling K

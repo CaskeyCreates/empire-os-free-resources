@@ -72,8 +72,10 @@ def test_phrases_resolve_on_the_cut_clock(setup):
     w = setup.words
     you = [x for x in w if x["text"] == "You"][0]
     before = word(w, "before")
+    spoken = r["headings"][0].pop("words")  # the indices of the words the heading's text was resolved to
+    assert spoken[0] == w.index(you) and spoken == sorted(spoken)
     assert r["headings"] == [{"lines": ["You don't have to wait", "*for things to get worse.*"],
-                              "start": you["start"], "end": before["start"]}]
+                              "start": you["start"], "end": before["start"], "sfx": True}]
     appt = word(w, "the", 1)  # "the appointments": the second "the"
     assert w[w.index(appt) + 1]["text"] == "appointments"
     ther = [x for x in w if x["text"] == "therapists"][0]
@@ -227,9 +229,10 @@ def test_the_example_plan_resolves(setup, capsys):
     (job.work / "plan.json").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
     r = plan.load(job)
     assert r["headings"] and r["broll"] and r["lockup"]["callout"]
+    assert [g["kind"] for g in r["graphics"]] == ["cycle", "stat"] and r["warnings"] == []
     assert cli.main(["plan", "check", "acme", "take1.mp4"]) == 0
     out = capsys.readouterr().out
-    assert "heading" in out and "b-roll" in out and "end card" in out
+    assert "heading" in out and "b-roll" in out and "end card" in out and "graphic cycle" in out and "graphic stat" in out
 
 
 def test_the_end_card_starts_where_the_page_starts_it():

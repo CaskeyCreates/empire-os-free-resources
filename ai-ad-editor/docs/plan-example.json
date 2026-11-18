@@ -2,13 +2,21 @@
   "lockup": "kit",
   "headings": [
     {
-      "lines": ["You don't have to wait", "*for things to get worse.*"],
-      "from": "you don't have to wait",
+      "lines": [
+        "*for things to get worse.*"
+      ],
+      "from": "for things to get worse",
       "to": "before things change",
       "hold": 0.7
     }
   ],
-  "key_words": ["stuck", { "word": "do", "only_in": "actually do it" }],
+  "key_words": [
+    "stuck",
+    {
+      "word": "do",
+      "only_in": "actually do it"
+    }
+  ],
   "broll": [
     {
       "clip": "pixabay-1234567",
@@ -20,5 +28,32 @@
     }
   ],
   "end_card": 3.2,
-  "bed_offset_db": 0
+  "bed_offset_db": 0,
+  "graphics": [
+    {
+      "kind": "cycle",
+      "from": "your back is already",
+      "to": "for things to get worse",
+      "ground": "deep",
+      "title": "telling you something",
+      "items": [
+        "your back",
+        "is already",
+        "you don't have to wait"
+      ]
+    },
+    {
+      "kind": "stat",
+      "from": "in six weeks",
+      "to": "do it again",
+      "to_end": true,
+      "hold": 0.7,
+      "ground": "paper",
+      "value": "6",
+      "label": "weeks"
+    }
+  ],
+  "sounds": true,
+  "flash": true,
+  "sfx_offset_db": 0
 }

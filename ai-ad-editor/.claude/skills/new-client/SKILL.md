@@ -25,9 +25,9 @@ Read `clients/<client>/brand/kit.json`. Tell the person plainly what we took: th
 
 If the person has their client's own licensed font files (.woff2, .woff, .ttf or .otf), they go in `clients/<client>/brand/fonts/`. Then, in `kit.json`, set that role's `family` to the font's name and its `files` to those files, like `"regular": "fonts/their-font-regular.ttf"`, with `null` for a face that has no file. We never download a font from their site, so only use files the person gives you.
 
-Tell them to open `clients/<client>/brand/swatch.html` in their browser and ask: "Does that look like their brand?" If no logo was found, tell them the end card will carry the client's name in its place until they have one, and ask them to drop `logo.png` or `logo.svg` into `clients/<client>/brand/`, then set `"logo"` in `kit.json` to that file name.
+If `client new` printed a note that the colours are a guess from the stylesheets, say so: they need checking against the logo and the buttons on the client's site. Give them the full path to `clients/<client>/brand/swatch.html` and tell them to open it in their browser. A light logo shows as a dark silhouette on the sheet's top panel, and the end card then sits on the deep ground. Ask: "Does that look like their brand?" If no logo was found, tell them the end card will carry the client's name in its place until they have one, and ask them to drop `logo.png` or `logo.svg` into `clients/<client>/brand/`, then set `"logo"` in `kit.json` to that file name.
 
-If they say the colours look wrong, ask for the brand's main colour as a hex code, like #1A1A1A, then ask for its accent colour the same way. Never edit the colours in `kit.json` by hand; this works out the rest and checks the captions will read:
+If they say the colours look wrong and don't know the codes, take the main colour from the client's logo and the accent from the main button on their site, then check the swatch again. Otherwise ask for the brand's main colour as a hex code, like #1A1A1A, then ask for its accent colour the same way. Never edit the colours in `kit.json` by hand; this works out the rest and checks the captions will read:
 
 ```
 uv run adeditor client colours <client> --primary "<main colour>" --accent "<accent colour>"
@@ -54,7 +54,7 @@ Leave out the second line and the detail when there isn't one.
 
 ## 4. Key terms
 
-Ask: "Any names, products or places the transcriber might mishear?" Put them in the `"keyterms"` list in `kit.json`, a few short words or phrases. There's no command for this; edit the file. If there are none, leave it empty.
+Ask: "Any names, products or places the transcriber might mishear?" Put them in the `"keyterms"` list in `kit.json`, a few short words or phrases. There's no command for this; use your file edit tool on the file. If there are none, leave it empty.
 
 ## 5. The music
 
@@ -71,6 +71,16 @@ uv run adeditor client music <client> --file "<path to the track>" --bpm 72
 ```
 
 Play nothing yourself. Tell them it's at `clients/<client>/brand/music/bed.mp3` and ask them to listen. If they don't like it, make another with a changed prompt.
+
+## 5b. The sound effects
+
+Ads carry five small sound effects (cut, push, hit, whip, tick), made once per install, not per client, with ElevenLabs Sound Effects, by this command once the key is in `.env`:
+
+```
+uv run adeditor doctor --fix
+```
+
+They need a paid ElevenLabs plan (the free plan can't make them). If the person is on the free plan, say so in one sentence: the ads still work, they just have no effects. To switch them off on purpose, add `ADEDITOR_NO_SOUNDS=1` to `.env`; remove it to have them.
 
 ## 6. Approve
 

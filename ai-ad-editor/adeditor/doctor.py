@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from adeditor import faces, keys, media
+from adeditor import faces, keys, media, sounds
 from adeditor.cli import command
 
 HYPERFRAMES = "hyperframes@0.7.5"
@@ -199,6 +199,27 @@ def check_face_model(fix: bool = False) -> Check:
         tmp.unlink(missing_ok=True)
 
 
+def check_sounds(fix: bool = False) -> Check:
+    """The five sound effects: ok with the manifest, a warning with the reason when there are none (the ads
+    still render without them). --fix makes them once with ElevenLabs."""
+    if sounds.switched_off():
+        return Check("sound effects", True, "The sound effects are switched off. Remove ADEDITOR_NO_SOUNDS=1 from "
+                     ".env (or from the environment) to have them.", warn=True)
+    note = ""
+    if fix:
+        got = sounds.make()
+        note = got["reason"] or ""
+    manifest, reason = sounds.available()
+    if manifest:
+        return Check("sound effects", True, f"all {len(manifest)} sounds are made")
+    why = note or reason
+    if sounds.NOT_ALLOWED in why and not check_elevenlabs_accepts().ok:
+        why = "ElevenLabs refused the key; check it in ai-ad-editor/.env"  # refused everywhere, not just here
+    # a free plan is changed on ElevenLabs, not by a fix; the reason already says to move to Starter
+    fix_msg = "" if "free plan" in why else "Run: adeditor doctor --fix"
+    return Check("sound effects", True, f"No sound effects: {why}", fix_msg, warn=True)
+
+
 # Later tasks append their own functions (each takes fix and returns a Check).
 CHECKS = [
     check_python,
@@ -211,6 +232,7 @@ CHECKS = [
     check_elevenlabs_accepts,
     check_broll_key,
     check_face_model,
+    check_sounds,
 ]
 
 

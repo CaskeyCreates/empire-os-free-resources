@@ -59,6 +59,7 @@ class Report:
     layout: dict[str, str] = field(default_factory=dict)  # ratio: "fade", "panel" or "card"
     stills: dict[str, list[tuple[str, float, str]]] = field(default_factory=dict)  # ratio: (label, time, file)
     credits: list[str] = field(default_factory=list)
+    sounds: dict[str, list[str]] = field(default_factory=dict)  # ratio: one line per sound effect placed
     noise: list[str] = field(default_factory=list)  # far word differences: the transcriber, not the cut
     accepted: list[str] = field(default_factory=list)  # near differences the person listened to and accepted
     review: Path | None = None
@@ -127,14 +128,16 @@ def _off_centre(face_samples: list[dict], spd: float, window: dict, ratio: str) 
 
 
 def still_times(resolved: dict, face_samples: list[dict], spd: float, *, end_start: float,
-                duration: float, window: dict | None = None, ratio: str | None = None) -> list[tuple[str, float]]:
+                duration: float, window: dict | None = None, ratio: str | None = None,
+                graphics: list[dict] | None = None) -> list[tuple[str, float]]:
     """(label, time on the cut's clock) for every moment worth a still: the first frame, each heading's
-    middle, each B-roll cut plus 0.2 s, the end card's middle, the 3 moments the face centre moves
+    middle, each graphic at its fullest (given `graphics`, [{n, full_at}]), each B-roll cut plus 0.2 s, the end card's middle, the 3 moments the face centre moves
     most between samples and, given the ratio's window, the 3 where the face sits furthest from the
     frame's centre (a slow drift has no big move). Face samples are on the 1x clock, so their times are
     divided by the speed."""
     out = [("First frame", 0.0)]
     out += [(f"Heading {n}", (h["start"] + h["end"]) / 2) for n, h in enumerate(resolved["headings"], 1)]
+    out += [(f"Graphic {g['n']}", g["full_at"]) for g in graphics or []]  # the moment adeditor preview shows
     for b in resolved["broll"]:
         out.append((f"B-roll {b['clip']}", min(b["start"] + CUT_AFTER, max(b["end"] - 0.02, b["start"]))))
     out.append(("End card", (end_start + duration) / 2))
@@ -299,6 +302,41 @@ def _credits(job: Job, resolved: dict, report: Report) -> Check:
     return Check("Credits", not missing, f"{len(ids) - len(missing)} of {len(ids)} clips have a credit.", problems)
 
 
+def cue_line(c: dict) -> str:
+    line = f"{at(c['at'])}, {c['role']}"
+    if c.get("clamped"):
+        line += " (its level hit the limit, so it sits at the loudest or quietest the mix allows)"
+    return line
+
+
+def _sounds(job: Job, entries: dict, ratios: list[str], report: Report) -> Check:
+    """Passes when the sound effects are off ("No sound effects: <reason>"), and otherwise lists every cue on
+    the review sheet and says which ones hit the level limit. Fails only when an effects file was promised
+    (cues recorded) and isn't in the mix folder."""
+    recorded = {r: entries[r].get("sounds") for r in ratios}
+    if not any(s and s.get("on") for s in recorded.values()):
+        reason = next((s.get("reason") for s in recorded.values() if s and s.get("reason")),
+                      "these ads were made before sound effects existed")
+        return Check("Sound effects", True, f"No sound effects: {reason}.")
+    problems, clamped, total = [], 0, 0
+    for r, s in recorded.items():
+        if not s or not s.get("on"):
+            continue
+        cues = s.get("cues", [])
+        report.sounds[r] = [cue_line(c) for c in cues]
+        total += len(cues)
+        clamped += sum(1 for c in cues if c.get("clamped"))
+        stem = s.get("stem")
+        if cues and not (stem and (job.work / "mix" / stem).is_file()):
+            problems.append(f"The {_label(r)} ad's sound effects were placed but their file isn't in the mix folder, so "
+                            f"they may be missing from it: run adeditor render {job.client} {job.video.name} again.")
+    detail = f"{total} sound effects placed across the ads."
+    if clamped:
+        detail += (f" {clamped} hit the level limit: the voice or the sound was so quiet or loud that the gain was "
+                   "held at the limit, so check those by ear.")
+    return Check("Sound effects", not problems, detail, problems)
+
+
 def _up_to_date(job: Job, entries: dict, made_from: str) -> Check:
     """Every ratio made, and made from the cut, plan, kit, music and speed there are now."""
     problems, again = [], f"adeditor render {job.client} {job.video.name}"
@@ -325,6 +363,10 @@ def _joins(cut: dict) -> list[dict]:
 
 def join_line(j: dict) -> str:
     before, after = (f"'{str(w).strip()}'" if w else None for w in (j["before"], j["after"]))
+    if after and not before and j["t"] <= 0.0:
+        return f"At the very start: listen that {after} begins cleanly ({verify.clock(j['t'])})."
+    if before and not after:
+        return f"At the very end: listen that {before} ends cleanly ({verify.clock(j['t'])})."
     where = (f"Between {before} and {after}" if before and after else f"Before {after}" if after
              else f"After {before}" if before else "At a cut")
     return f"{where} at {at(j['t'])}"
@@ -392,6 +434,11 @@ def write_review(job: Job, report: Report, cut: dict) -> Path:
         figs = "\n".join(f'<figure><img src="{href(path)}" alt="{esc(label)} at {t:.1f} s" loading="lazy">'
                          f"<figcaption>{esc(label)}, {t:.1f} s</figcaption></figure>" for label, t, path in items)
         stills += _section(f"Stills, {_label(ratio)}", f'<div class="grid">\n{figs}\n</div>')
+    sound_list = ""
+    if report.sounds:
+        rows = "\n".join(f"<li>{esc(_label(r))}: {esc('; '.join(lines)) if lines else 'none'}</li>"
+                         for r, lines in report.sounds.items())
+        sound_list = _section("Sound effects", f"<p>Every sound effect, by the time it plays.</p>\n<ul>\n{rows}\n</ul>")
     if report.credits:
         path = job.broll_cache / "credits.json"
         known = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -404,7 +451,7 @@ def write_review(job: Job, report: Report, cut: dict) -> Path:
         credits = _section("Credits", "<p>No B-roll in this ad.</p>")
     page = Template(TEMPLATE.read_text(encoding="utf-8")).substitute(
         title=esc(job.video.stem), summary_class="pass" if ok else "fail", summary=summary, checks=checks,
-        joins=joins, warnings=layout_note + warnings, stills=stills, credits=credits)
+        joins=joins, warnings=layout_note + warnings + sound_list, stills=stills, credits=credits)
     out = job.ads / "review.html"
     out.write_text(page, encoding="utf-8")
     return out
@@ -443,6 +490,7 @@ def run(job: Job) -> Report:
     for r in ratios:
         report.checks.append(_file(r, ads[r], entries[r]))
     report.checks.append(_mouth(entries))
+    report.checks.append(_sounds(job, entries, ratios, report))
     report.checks.append(_credits(job, resolved, report))
     try:
         face_samples = faces.filled(faces.load(job.work / "faces.json")[1])
@@ -453,7 +501,8 @@ def run(job: Job) -> Report:
         report.layout[r] = entries[r].get("mode", "fade")
         if ads[r].is_file():
             times = still_times(resolved, face_samples, spd, end_start=entries[r]["end_start"],
-                                duration=entries[r]["duration"], window=entries[r].get("window"), ratio=r)
+                                duration=entries[r]["duration"], window=entries[r].get("window"), ratio=r,
+                                graphics=entries[r].get("graphics"))
             report.stills[r] = _take_stills(job, r, ads[r], times)
     report.review = write_review(job, report, cut)
     return report

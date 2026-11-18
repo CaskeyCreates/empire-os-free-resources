@@ -2,7 +2,7 @@
 
 Turn your client's raw talking-head video into finished video ads by talking to Claude.
 
-Put the video in a folder, say "edit this into an ad", and you get three ads back: 9:16 for Reels and Stories, 4:5 for the feed and 1:1 square. Each one has the silences and retakes cut (never a word you kept), captions timed to every word in your client's own colours and fonts, real B-roll on the lines that need it, a music bed under the voice, the offer on the first frame and an end card.
+Put the video in a folder, say "edit this into an ad", and you get three ads back: 9:16 for Reels and Stories, 4:5 for the feed and 1:1 square. Each one has the silences and retakes cut (never a word you kept), captions timed to every word in your client's own colours and fonts, real B-roll on the lines that need it, short motion graphics drawn from what the speaker says (a cycle, steps, a comparison, a number, a checklist or a quote), a shutter flash and five small sound effects, a music bed under the voice, the offer on the first frame and an end card.
 
 **The step by step guide is [GUIDE.md](GUIDE.md).** Start there.
 
@@ -23,8 +23,10 @@ This project uses [uv](https://docs.astral.sh/uv/) for Python. Use `uv sync` and
 Three things you say to Claude:
 
 1. **"Set up a new client called Acme from acme.com."** It reads their site for colours, fonts and logo, asks for the offer, makes their music once, and waits for your yes.
-2. **"Edit the new video for Acme into an ad."** It cuts, plans, picks B-roll by looking at it, renders all three ratios, checks them and looks at the stills before it tells you it's done.
-3. **Notes, in plain words.** "A bit faster." "Music lower." "Swap the shot on school." It changes only that.
+2. **"Edit the new video for Acme into an ad."** It cuts, plans, picks B-roll and graphics by looking at them, renders all three ratios, checks them and looks at the stills before it tells you it's done.
+3. **Notes, in plain words.** "A bit faster." "Music lower." "Quieter effects." "Swap the shot on school." It changes only that.
+
+How many graphics an ad holds depends on its length: one can start in any 12 seconds, so a 20 to 30 second ad usually holds one or two. Without a Pixabay key there's no stock B-roll; the ad has graphics, your client's own clips if you give it some, and the take itself.
 
 Your ads land in `clients/<client>/ads/<video>/` with a review sheet.
 
@@ -34,11 +36,13 @@ Your ads land in `clients/<client>/ads/<video>/` with a review sheet.
 - Use AI-generated footage, faces or voices.
 - Cut a word you kept. It listens to the cut again to prove it, and if two words ran together at a cut, it tells you the time so you can listen too.
 - Put a caption over the speaker's mouth. When a take is framed too tightly for that, the check fails and tells you to ask for a wider take.
+- Show a word on a graphic the speaker didn't say.
 - Put a price, a guarantee or fine print on the video.
 
 ## Where the footage and tools come from
 
 - **B-roll** comes from [Pixabay](https://pixabay.com) by default, or from [Pexels](https://www.pexels.com) if you already have a Pexels key (Pexels has paused new keys), or from your client's own licensed clips in `clients/<client>/broll/own/`. Every clip used is credited in the review sheet.
+- **Sound effects:** made once at setup by the doctor's fix with ElevenLabs Sound Effects, on your own account. The free plan can't make them, and then the ads simply have none. To switch them off on purpose, add `ADEDITOR_NO_SOUNDS=1` to `.env`; remove it to have them again.
 - **Transcription and music:** [ElevenLabs](https://elevenlabs.io).
 - **Rendering:** [HyperFrames](https://github.com/heygen-com/hyperframes) and [ffmpeg](https://ffmpeg.org).
 - **Faces:** [MediaPipe](https://ai.google.dev/edge/mediapipe) face detection.

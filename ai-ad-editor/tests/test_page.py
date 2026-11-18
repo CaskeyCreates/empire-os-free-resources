@@ -438,3 +438,239 @@ def test_an_end_card_with_no_logo_sets_the_clients_name_in_the_display_font(ad_j
     assert re.search(r'<div id="endLogo" class="wordmark"[^>]*>%s</div>' % re.escape(kit["name"]), html)
     assert re.search(r"#endLogo\.wordmark \{[^}]*font-family: [^;]*;", html)
     assert '"#endLogo"' in html  # it still animates in with the card
+
+
+# Task 3: the shutter flash and every picture change as a sound event.
+FACE = {"x": 0.369, "y": 0.403, "w": 0.351, "h": 0.197}
+
+
+def flash_plan(**extra):
+    return {"headings": [], "key_words": [], "broll": [], **extra}
+
+
+def punch_job(ad_job, plan, segments=None):
+    words, length = words_and_length()
+    return ad_job(words, length, plan=plan, clips=[("pexels-1234567", 10)], face=FACE, segments=segments)
+
+
+def changes(facts):
+    return [e for e in facts["events"] if e["event"] == "camera change"]
+
+
+def test_visible_punch_changes_flash_and_sound(ad_job):
+    # 4 segments: plain, punch, plain, punch is 3 changes, each with a flash and a cut on the 0.9 frame.
+    job = punch_job(ad_job, flash_plan())
+    html, facts, data = page_of(job, "9x16")
+    cuts = changes(facts)
+    assert len(cuts) == 3 and all(e["role"] == "cut" and e["sfx"] is True for e in cuts)
+    keys = dict((f, o) for f, o in data["flash"]["white"])
+    assert [round(f / 30, 3) for f, o in data["flash"]["white"] if o == 0.9] == [e["at"] for e in cuts]
+    for f, o in data["flash"]["white"]:
+        if o == 0.9:  # the run before it is 0.3 and the run after it 0.55, 0.25, 0
+            assert [keys[f - 1], keys[f + 1], keys[f + 2], keys[f + 3]] == [0.3, 0.55, 0.25, 0.0]
+    assert 'id="flash"' in html and "#flash" in html
+    punch = dict(data["flash"]["punch"])
+    first = round(cuts[0]["at"] * 30)
+    assert punch[first] == 1.045 and punch[first + 8] == 1.0 and 1.0 < punch[first + 4] < 1.045
+
+
+def test_hidden_punch_changes_are_silent(ad_job):
+    # The B-roll covers some of the changes; only those outside it are seen and heard.
+    broll = [{"clip": "pexels-1234567", "in": 1.0, "from": "your back is already", "to": "most people wait until", "y": 40}]
+    job = punch_job(ad_job, flash_plan(broll=broll))
+    _, facts, data = page_of(job, "9x16")
+    [b] = facts["broll"]
+    all_changes = [s[0] for prev, s in zip(data["states"], data["states"][1:]) if s[1:] != prev[1:]]
+    inside = [t for t in all_changes if b["start"] <= t < b["end"]]
+    assert inside and len(all_changes) == 3  # the fixture really puts a change under the B-roll
+    seen = [e["at"] for e in changes(facts)]
+    assert len(seen) == len(all_changes) - len(inside)
+    assert not any(b["start"] - 0.05 <= t < b["end"] for t in seen)
+    whitest = [round(f / 30, 3) for f, o in data["flash"]["white"] if o == 0.9]
+    assert whitest == seen  # no flash where there is no sound
+
+
+def test_broll_and_headings_make_events(ad_job):
+    job = punch_job(ad_job, standard_plan())
+    _, facts, _ = page_of(job, "9x16")
+    [b] = facts["broll"]
+    [h] = facts["headings"]
+    ev = facts["events"]
+    assert [e["at"] for e in ev if e["event"] in ("b-roll in", "b-roll out")] == [b["start"], b["end"]]
+    assert all(e["role"] == "cut" for e in ev if e["event"].startswith("b-roll"))
+    hits = [e for e in ev if e["role"] == "hit"]
+    assert [e["at"] for e in hits] == [round(h[0] + 0.12, 3)]  # the opening lockup makes none
+    assert not any(e["at"] == 0 for e in ev)
+
+
+def test_flash_off_keeps_the_sound(ad_job):
+    job = punch_job(ad_job, flash_plan())
+    on = page_of(job, "9x16")
+    (job.work / "plan.json").write_text(json.dumps({"lockup": "kit", **flash_plan(flash=False)}), encoding="utf-8")
+    off = page_of(job, "9x16")
+    assert changes(on[1]) == changes(off[1]) and len(changes(off[1])) == 3
+    assert 'id="flash"' not in off[0] and off[2]["flash"] == {"white": [], "punch": []}
+    assert "id=\"flash\"" in on[0]
+
+
+def test_events_are_sorted_and_carry_sfx_flags(ad_job):
+    plan = standard_plan()
+    plan["broll"][0]["sfx"] = False
+    plan["headings"][0]["sfx"] = False
+    _, facts, _ = page_of(punch_job(ad_job, plan), "9x16")
+    ev = facts["events"]
+    assert [e["at"] for e in ev] == sorted(e["at"] for e in ev)
+    assert all(isinstance(e["sfx"], bool) for e in ev)
+    assert {e["sfx"] for e in ev if e["event"].startswith("b-roll") or e["role"] == "hit"} == {False}
+    assert all(e["sfx"] for e in ev if e["event"] == "camera change")
+
+
+def test_a_stretch_that_stays_plain_makes_no_change(ad_job):
+    from adeditor import shutter
+
+    states = [[0.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0], [2.0, 1.12, 5.0, 3.0], [3.0, 1.12, 5.0, 3.0]]
+    assert shutter.punch_changes(states, []) == [2.0]
+    assert shutter.punch_changes(states, [(1.5, 2.0)]) == [2.0]  # the end is outside the window
+    assert shutter.punch_changes(states, [(1.5, 2.5)]) == []
+
+
+def test_a_change_keys_on_the_frame_its_rounded_time_lands_on():
+    from adeditor import shutter
+
+    states = [[0.0, 1.0, 0.0, 0.0], [21.43345, 1.12, 5.0, 3.0]]  # the page sets this state at 21.433, frame 643
+    [t] = shutter.punch_changes(states, [])
+    assert t == 21.433 and dict(shutter.flash_keys([t])["white"])[643] == 0.9
+
+
+def logo_job(ad_job, make, name="logo.png", paper="#FAFAF7", **job_args):
+    words, length = words_and_length()
+    job = ad_job(words, length, plan=job_args.pop("plan", {}), **job_args)
+    make(job.brand / name)
+    kit = json.loads((job.brand / "kit.json").read_text(encoding="utf-8"))
+    kit["logo"] = name
+    kit["colours"]["paper"] = paper
+    (job.brand / "kit.json").write_text(json.dumps(kit), encoding="utf-8")
+    return job, kit
+
+
+def white_png(path):
+    from PIL import Image
+
+    img = Image.new("RGBA", (60, 30), (0, 0, 0, 0))
+    img.paste((255, 255, 255, 255), (10, 8, 50, 22))
+    img.save(path)
+
+
+def dark_png(path):
+    from PIL import Image
+
+    img = Image.new("RGBA", (60, 30), (0, 0, 0, 0))
+    img.paste((20, 20, 20, 255), (10, 8, 50, 22))
+    img.save(path)
+
+
+def end_ground(job):
+    html = page.build(job, "9x16").read_text(encoding="utf-8")
+    facts = json.loads((job.work / "pages" / "9x16" / "page.json").read_text(encoding="utf-8"))
+    return html, facts["end_ground"]
+
+
+def test_a_white_logo_on_transparent_gives_the_deep_end_card(ad_job):
+    job, kit = logo_job(ad_job, white_png)
+    html, ground = end_ground(job)
+    assert ground == "deep"
+    assert re.search(rf"#end \{{[^}}]*background: {kit['colours']['deep']}", html)
+    assert not re.search(r"#endLogo \{[^}]*mix-blend-mode", html)
+
+
+def test_a_dark_logo_gives_the_paper_end_card(ad_job):
+    job, kit = logo_job(ad_job, dark_png)
+    html, ground = end_ground(job)
+    assert ground == "paper"
+    assert re.search(rf"#end \{{[^}}]*background: {kit['colours']['paper']}", html)
+
+
+def test_an_unreadable_logo_gives_the_paper_end_card(ad_job):
+    job, _ = logo_job(ad_job, lambda p: p.write_bytes(b"not an image"))
+    assert end_ground(job)[1] == "paper"
+
+
+SVG = ('<svg xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M0 0h9v9z"/>'
+       '<circle style="fill:#FFFFFF" r="3"/></svg>')
+
+
+def test_an_svg_with_only_white_fills_gives_the_deep_end_card(ad_job):
+    job, _ = logo_job(ad_job, lambda p: p.write_text(SVG), name="logo.svg")
+    assert end_ground(job)[1] == "deep"
+
+
+def test_an_svg_with_dark_fills_gives_the_paper_end_card(ad_job):
+    dark = SVG.replace("#fff", "#1a1a1a").replace("#FFFFFF", "#1a1a1a")
+    job, _ = logo_job(ad_job, lambda p: p.write_text(dark), name="logo.svg")
+    assert end_ground(job)[1] == "paper"
+
+
+def test_the_swatch_shows_the_logo_on_the_ground_the_end_card_uses(ad_job):
+    from adeditor import brand
+
+    job, kit = logo_job(ad_job, white_png)
+    swatch = brand.write_swatch(job.client, kit).read_text(encoding="utf-8")
+    assert f"alt='logo' style='background:{kit['colours']['deep']}'" in swatch
+
+
+def panel_logo_style(job, ratio="9x16"):
+    html = page.build(job, ratio).read_text(encoding="utf-8")
+    facts = json.loads((job.work / "pages" / ratio / "page.json").read_text(encoding="utf-8"))
+    m = re.search(r'<img id="idleLogo"[^>]*style="([^"]*)"', html)
+    return (m.group(1) if m else None), facts["panel_logo_silhouette"]
+
+
+def panel_job(ad_job, video, make):
+    # a high head forces the panel layout, where the logo sits on the paper panel
+    return logo_job(ad_job, make, paper="#F6F1E7", plan=standard_plan(), clips=[("pexels-1234567", 10)],
+                    aroll=video(2, 2560, 1440), face=HIGH_HEAD, kit=TWO_LINE_LOCKUP)[0]
+
+
+def test_a_white_logo_in_the_panel_is_drawn_as_a_dark_silhouette(ad_job, video):
+    style, flag = panel_logo_style(panel_job(ad_job, video, white_png))
+    assert flag is True and style and "filter:brightness(0)" in style and "multiply" not in style
+
+
+def test_a_dark_logo_in_the_panel_gets_no_filter(ad_job, video):
+    style, flag = panel_logo_style(panel_job(ad_job, video, dark_png))
+    assert flag is False and style and "brightness" not in style
+
+
+def test_captions_leave_out_the_words_a_heading_shows():
+    from adeditor import plan as planmod
+
+    texts = ["market", "after", "market", "we", "got", "calendars", "booked", "and", "then", "booked", "again"]
+    words = [{"text": t, "start": i * 0.5, "end": i * 0.5 + 0.4} for i, t in enumerate(texts)]
+    kept = planmod.Kept(words)
+    idx = planmod._said_words(kept, "calendars booked", 0.0)
+    assert idx == [5, 6]
+    heading = {"start": 0.0, "end": 3.9, "words": idx}  # shows from the start to just after "booked"
+    got = page.hide_heading_words([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10]], words, [heading])
+    shown = [[words[i]["text"] for i in g] for g in got]
+    assert shown == [["market", "after", "market", "we"], ["got", "and"], ["then", "booked", "again"]]
+    # a group left with no words isn't drawn
+    assert page.hide_heading_words([[5, 6], [7]], words, [heading]) == [[7]]
+    # words said outside the window stay
+    late = {"start": 0.0, "end": 2.0, "words": idx}
+    assert page.hide_heading_words([[5, 6]], words, [late]) == [[5, 6]]
+
+
+def test_a_headings_words_are_absent_from_the_pages_captions_in_its_window(ad_job):
+    words, _ = words_and_length()
+    with_heading = punch_job(ad_job, standard_plan())
+    _, facts, data = page_of(with_heading, "9x16")
+    [h] = facts["headings"]
+    shown = {i for _, _, ws in data["caps"] for i, *_ in ws}
+    in_window = {i for i, w in enumerate(words) if w["start"] < h[1] and w["end"] > h[0]}
+    said = {i for i in in_window if words[i]["text"].strip(".,'").lower() in ("you", "don't", "have", "to", "wait")}
+    assert said and not said & shown
+    # without the heading the same words are captioned
+    bare = {**standard_plan(), "headings": []}
+    (with_heading.work / "plan.json").write_text(json.dumps({"lockup": "kit", **bare}), encoding="utf-8")
+    _, _, data2 = page_of(with_heading, "9x16")
+    assert said <= {i for _, _, ws in data2["caps"] for i, *_ in ws}

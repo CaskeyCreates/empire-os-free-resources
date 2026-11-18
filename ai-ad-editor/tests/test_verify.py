@@ -1,3 +1,5 @@
+import pytest
+
 from adeditor import verify
 
 
@@ -80,3 +82,89 @@ def test_explain_names_the_word_the_time_and_the_line():
     assert "Book" not in text
     for dash in ("\u2014", "\u2013", "-" * 2):
         assert dash not in text
+
+
+def _spoken(text, step=0.4):
+    return [{"text": w, "start": round(i * step, 3), "end": round(i * step + 0.3, 3)} for i, w in enumerate(text.split())]
+
+
+def test_number_value_reads_a_number_as_shown():
+    assert verify.number_value("$7,500") == 7500
+    assert verify.number_value("90%") == 90
+    assert verify.number_value("3x") == 3
+    assert verify.number_value("R1.5m") == 1_500_000
+    assert verify.number_value("30") == 30
+    assert verify.number_value("thirty") is None
+    assert verify.number_value("30 to 40") is None
+    assert verify.number_value("") is None
+
+
+def test_numbers_said_reads_digits_and_words():
+    words = _spoken("we added seven thousand five hundred dollars and then 7,500 more and ninety percent and a hundred "
+                    "and twenty five and five six and 3 million and 2.5 times")
+    assert verify.numbers_said(words, 0, 100) == [7500, 7500, 90, 125, 5, 6, 3_000_000, 2.5]
+    # only the words inside the window count
+    assert verify.numbers_said(words, 0, 0.7) == []
+    assert verify.numbers_said(_spoken("ninety-nine and one hundred and five"), 0, 100) == [99, 105]
+
+
+def test_number_units_name_the_spoken_word():
+    assert verify.number_units("90%") == ("percent",)
+    assert "times" in verify.number_units("3x") and "dollars" in verify.number_units("$7,500")
+    assert verify.number_units("R5,000") == ("rand",) and verify.number_units("30") == ()
+
+
+@pytest.mark.parametrize("said,values,unit", [
+    ("it cost $7,500 in total", [7500], "dollars"),
+    ("it cost R5,000 in total", [5000], "rand"),
+    ("it cost £300 in total", [300], "pounds"),
+    ("it cost €1,200 in total", [1200], "euros"),
+    ("it cost 90% in total", [90], "percent"),
+])
+def test_a_currency_symbol_in_the_transcript_is_read_as_its_word(said, values, unit):
+    words = _spoken(said)
+    assert verify.numbers_said(words, 0, 100) == values
+    assert unit in verify.spoken_words(words, 0, 100)
+
+
+@pytest.mark.parametrize("said,values", [
+    ("twelve hundred", [1200]),
+    ("5 hundred", [500]),
+    ("7 thousand five hundred", [7500]),
+    ("seven thousand 500", [7500]),
+    ("twenty five hundred", [2500]),
+    ("2.5 million", [2_500_000]),
+    ("5 6", [5, 6]),
+])
+def test_hundreds_and_thousands_after_digits_or_words(said, values):
+    assert verify.numbers_said(_spoken(said), 0, 100) == values
+
+
+@pytest.mark.parametrize("said,values", [
+    ("five hundred, 3 clients", [500, 3]),
+    ("three hundred. 5 clients", [300, 5]),
+    ("12 hundred 5", [1200, 5]),
+    ("3 thousand 5", [3000, 5]),
+    ("five hundred 3 clients", [500, 3]),
+    ("seven thousand, 500 clients", [7000, 500]),
+    ("seven thousand 500 clients", [7500]),
+    ("five hundred and three", [503]),
+    ("2,500 clients", [2500]),
+    ("seven thousand\u2026 500", [7000, 500]),
+    ("seven thousand \u2014 500", [7000, 500]),
+    ("seven thousand -- 500", [7000, 500]),
+    ("seven thousand) 500", [7000, 500]),
+    ('seven thousand" 500', [7000, 500]),
+    ("seven thousand\u2026 five", [7000, 5]),
+    ("ninety% of 5", [90, 5]),
+])
+def test_a_number_never_merges_across_a_pause_or_a_bare_digit(said, values):
+    assert verify.numbers_said(_spoken(said), 0, 100) == values
+
+
+def test_r_and_its_number_split_into_two_words_still_say_rand():
+    words = _spoken("it was R 5,000 in total")
+    assert verify.numbers_said(words, 0, 100) == [5000]
+    assert "rand" in verify.spoken_words(words, 0, 100)
+    assert "dollars" in verify.spoken_words(_spoken("it was $ 7,500 flat"), 0, 100)
+    assert "rand" not in verify.spoken_words(_spoken("R and then 5,000"), 0, 100)

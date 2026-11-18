@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
-from adeditor import brand, faces, layout, media, plan, speed, verify
+from adeditor import brand, faces, layout, media, plan, shutter, speed, verify
 from adeditor.paths import Job
 
 TEMPLATE = Path(__file__).resolve().parent.parent / "template"
@@ -69,6 +69,16 @@ def groups(words: list[dict]) -> list[list[int]]:
     if cur:
         out.append(cur)
     return out
+
+
+def hide_heading_words(grouped: list[list[int]], words: list[dict], headings: list[dict]) -> list[list[int]]:
+    """Caption groups without the words a heading shows while it shows (Ruling O). A word goes when it is one
+    of the word indices the heading's text was resolved to and it is said inside the heading's window; a
+    group left with no words is dropped."""
+    hidden = {i for h in headings for i in h.get("words", [])
+              if words[i]["start"] < h["end"] and words[i]["end"] > h["start"]}
+    out = [[i for i in g if i not in hidden] for g in grouped]
+    return [g for g in out if g]
 
 
 def key_indices(words: list[dict], key_words: list[dict]) -> set[int]:
@@ -184,6 +194,11 @@ class Measure:
             width += (font.getlength(part) / 100 * px if font else 0.6 * px * len(part)) + spacing * px * len(part)
         return min(1.0, MAX_ROW / width) if width > 0 else 1.0
 
+    def width(self, role: str, face: str, text: str, px: float, spacing: float = 0.0) -> float:
+        """The width of `text` in the kit's `role` font at `px` with `spacing` em between letters."""
+        font = self._font(role, face)
+        return (font.getlength(text) / 100 * px if font else 0.6 * px * len(text)) + spacing * px * len(text)
+
     def caption_width(self, shown: list[tuple[int, str, bool]], px: float) -> float | None:
         """The width of a caption group's words at `px`, as the page sets them (the body bold, key words in
         the display italic at 1.12 times), without the pill's padding; None when a font can't be read."""
@@ -243,7 +258,7 @@ def _font_faces(kit: dict, job: Job, assets: Path) -> tuple[str, bool]:
 
 
 def _panel_html(win: layout.Window, c: dict, lockup: dict, logo: str | None, alt: str, text: dict, m: Measure,
-                blend_logo: bool) -> str:
+                blend_logo: bool, silhouette: bool = False) -> str:
     """The panel layout's paper panel from the top to the take, the soft blend into the take's top edge,
     and what the panel holds between the lockup and the headings: the logo, small, and the callout. In
     the card layout the paper runs the whole canvas, around the card, with no blend."""
@@ -254,7 +269,8 @@ def _panel_html(win: layout.Window, c: dict, lockup: dict, logo: str | None, alt
     fit = m.fit("eyebrow", lockup["callout"], 38 * sc)
     mark = (f'<img id="idleLogo" src="assets/{logo}" alt="{html.escape(alt)}" style="height:{_n(64 * sc)}px;'
             f'max-width:{_n(360 * sc)}px;object-fit:contain;margin-bottom:{_n(18 * sc)}px'
-            f'{";mix-blend-mode:multiply" if blend_logo else ""}" />' if logo else "")
+            f'{";filter:brightness(0)" if silhouette else ";mix-blend-mode:multiply" if blend_logo else ""}" />'
+            if logo else "")
     return (f'      <div id="panel" data-layout-allow-occlusion data-layout-allow-overflow style="position:absolute;left:0;'
             f'top:0;width:1080px;height:{paper_h}px;background:{c["paper"]};z-index:2">\n'
             f'        <div id="idle" style="position:absolute;left:0;width:1080px;top:{text["lock"]}px;'
@@ -355,6 +371,10 @@ def build(job: Job, ratio: str) -> Path:
     # The text rows, each kept on one line, and where the lowest line of the lockup and the headings sits:
     # the layout keeps the head clear of it.
     m = Measure(kit, job.brand)
+    from adeditor import graphic_page  # imported here: graphic_page uses this module's helpers
+
+    built = [graphic_page.build(g, n, ratio, kit, m) for n, g in enumerate(resolved.get("graphics", []), 1)]
+    graphics = resolved.get("graphics", [])
     headings = resolved["headings"]
     lock_rows = _offer_rows(resolved["lockup"], "lock", m, sc, 58 * sc)
     heading_rows = [_heading_rows(n, h, m, sc) for n, h in enumerate(headings, 1)]
@@ -392,7 +412,7 @@ def build(job: Job, ratio: str) -> Path:
                       "end": _n(b["end"]), "dur": _n(min(window, have - STAGE_TAIL)), "y": b["y"]})
 
     warnings = ([win.warn] if win.warn else []) + layout.face_clear(win, face_map, ratio)
-    lock_end = min([b["start"] for b in broll] + [h["start"] for h in headings] + [end0])
+    lock_end = min([b["start"] for b in broll] + [h["start"] for h in headings] + [g["start"] for g in graphics] + [end0])
     # Punch-ins keep the head clear of the text while it shows.
     text_times = [(0.0, lock_end)] + [(h["start"], h["end"]) for h in headings]
     states = layout.states(cut["segments"], face_map, win, spd, text_times)
@@ -402,11 +422,11 @@ def build(job: Job, ratio: str) -> Path:
                         f"{plan.MIN_LOCKUP} s or later so the offer reads first.")
 
     # Captions: grouped, timed and placed as the first ad's were.
-    covers = [(b["start"], b["end"]) for b in broll] + [(end0, duration)]
+    covers = [(b["start"], b["end"]) for b in broll] + [(g["start"], g["end"]) for g in graphics] + [(end0, duration)]
     warnings += layout.face_out(win, face_map, states, spd, skip=covers)
     key = key_indices(words, resolved["key_words"])
     cap = text["cap"]
-    grouped = groups(words)
+    grouped = hide_heading_words(groups(words), words, headings)
     caps = []
     for gi, g in enumerate(grouped):
         a = max(CAP_FIRST, words[g[0]]["start"] - CAP_IN)
@@ -442,6 +462,16 @@ def build(job: Job, ratio: str) -> Path:
     if win.mode != "fade":
         paper_fade = "none"  # the panel is the paper; nothing fades over the take
     alt = f"{kit.get('name', '')} logo"
+    # The logo always shows: one that would vanish on the paper puts the end card on the deep ground.
+    logo_file = job.brand / kit["logo"] if logo else None
+    ground = brand.end_ground(c, logo_file)
+    silhouette = brand.logo_vanishes_on_paper(c, logo_file)  # a light logo on the panel's paper is drawn dark
+    if ground == "deep":
+        end_look = dict(end_bg=c["deep"], end_ink=c["paper"], end_em=c["highlight"], end_btn=c["highlight"],
+                        end_btn_ink=c["deep"])
+    else:
+        end_look = dict(end_bg=c["paper"], end_ink=c["primary"], end_em=c["accent_dark"], end_btn=c["primary"],
+                        end_btn_ink=c["paper"])
     lockup_block, lockup_items = _lockup_html(lock_rows, text["lock"], lock_end, win.shrink)
     heading_blocks = [_heading_html(n, h, rows, text["heading"], win.shrink)
                       for n, (h, rows) in enumerate(zip(headings, heading_rows), 1)]
@@ -464,8 +494,14 @@ def build(job: Job, ratio: str) -> Path:
         + " ".join(f'<span id="w{i}" class="{"w k" if k else "w"}">{html.escape(t)}</span>' for i, t, k in cp["words"])
         + "</span></div>"
         for gi, cp in enumerate(caps))
+    # The camera changes anyone sees: not under B-roll, a graphic or the end card. Each flashes and cuts.
+    hidden = covers
+    cuts = shutter.punch_changes(states, hidden)
+    flash = shutter.flash_keys(cuts) if resolved["flash"] else {"white": [], "punch": []}
+    events = shutter.build_events(cuts, resolved["broll"], headings, [e for b in built for e in b["events"]])
     data = {
         "duration": duration,
+        "flash": flash,
         "states": [[_n(t), s, tx, ty] for t, s, tx, ty in states],
         "broll": [[b["k"], b["start"], b["dur"]] for b in broll],
         "lockup": {"paper": "#lockPaper", "items": lockup_items, "start": 0, "end": lock_end, "enter": False},
@@ -484,22 +520,26 @@ def build(job: Job, ratio: str) -> Path:
         height=H, sc=text["sc"], font_faces=font_faces, synthetic=synthetic,
         primary=c["primary"], deep=c["deep"], paper=c["paper"], accent=c["accent"], accent_dark=c["accent_dark"],
         highlight=c["highlight"], ink=c["ink"], plate=_rgba(c["deep"], .88), line=_rgba(c["accent"], .55),
-        logo_blend=" mix-blend-mode: multiply;" if _light(c["paper"]) else "",
+        logo_blend=" mix-blend-mode: multiply;" if ground == "paper" and _light(c["paper"]) else "", **end_look,
         display=_family(kit["fonts"]["display"]["family"]), body=_family(kit["fonts"]["body"]["family"]),
         take_left=float(round(box[0], 3)), take_top=float(round(box[1], 3)), take_w=float(round(box[2], 3)),
         take_h=float(round(box[3], 3)), take_z=3 if win.mode == "card" else 1,
         take_style=(f" border-radius: {layout.CARD_RADIUS}px; box-shadow: 0 22px 56px rgba(0,0,0,.2), "
                     "0 6px 16px rgba(0,0,0,.12);" if win.mode == "card" else ""),
         win_left=round(-win.x0, 3) + 0.0, win_top=round(-win.y0, 3) + 0.0, src_w=round(win.src_w, 3),
-        src_h=round(win.src_h, 3), panel=_panel_html(win, c, resolved["lockup"], logo, alt, text, m, _light(c["paper"])),
+        src_h=round(win.src_h, 3), panel=_panel_html(win, c, resolved["lockup"], logo, alt, text, m, _light(c["paper"]), silhouette),
         paper_h=paper_h, paper_fade=paper_fade, duration=duration, aroll_duration=_n(speech - AROLL_TAIL),
         broll=broll_html, lockup=lockup_block, headings="\n".join(b for b, _ in heading_blocks), end_card=end_block,
-        captions=caption_html, data=json.dumps(data).replace("</", "<\\/"),
+        flash_html=('      <div id="flash" data-layout-allow-occlusion data-layout-allow-overflow></div>'
+                    if resolved["flash"] else ""),
+        pop_ox=float(round(win.x0 + box[2] / 2, 3)), pop_oy=float(round(win.y0 + box[3] / 2, 3)),
+        captions=caption_html, graphics="\n".join(b["html"] for b in built),
+        graphics_js="\n".join(b["js"] for b in built), data=json.dumps(data).replace("</", "<\\/"),
     )
     index = out / "index.html"
     index.write_text(page, encoding="utf-8")
     facts = {
-        "ratio": ratio, "height": H, "speech": speech, "duration": duration, "end": [end0, duration],
+        "ratio": ratio, "height": H, "speech": speech, "duration": duration, "end": [end0, duration], "end_ground": ground, "panel_logo_silhouette": silhouette,
         "window": {"scale": win.scale, "x0": win.x0, "y0": win.y0, "mode": win.mode, "panel": win.panel,
                    "head_gap": win.head_gap, "shrink": win.shrink, "punch": win.punch,
                    "frame": [float(round(v, 3)) for v in box], "head_limit": round(win.head_limit, 2)
@@ -508,6 +548,9 @@ def build(job: Job, ratio: str) -> Path:
         "text_bottom": round(lowest, 2), "mouth_covered": layout.mouth_covered(win, face_map),
         "warnings": warnings, "lockup": [0.0, lock_end],
         "headings": [[_n(h["start"]), _n(h["end"])] for h in headings],
+        "graphics": [{"n": n, "kind": g["kind"], "start": _n(g["start"]), "end": _n(g["end"]), "full_at": b["full_at"]}
+                     for n, (g, b) in enumerate(zip(graphics, built), 1)],
+        "events": events,
         "broll": broll, "captions": [{k: v for k, v in cp.items() if k not in ("words", "covered")} for cp in caps],
         "states": len(states),
     }

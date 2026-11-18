@@ -402,3 +402,92 @@ def test_review_says_so_when_an_ad_has_no_broll(ad_job, tmp_path, video, monkeyp
     assert report.credits == []
     assert "<h2>Credits</h2>\n<p>No B-roll in this ad.</p>" in html
     assert "Keep these credits" not in html
+
+
+def sound_check(ad_job, tmp_path, video, monkeypatch, sounds, effects_file):
+    words = cut_words(TEXT)
+    job = ad_job(words, 12.0)
+    build_ads(job, tmp_path, video)
+    entries = json.loads((job.work / "render.json").read_text(encoding="utf-8"))
+    if sounds is not None:
+        entries["9x16"]["sounds"] = {"stem": "effects-9x16.wav", **sounds} if sounds.get("on") else sounds
+    (job.work / "render.json").write_text(json.dumps(entries), encoding="utf-8")
+    if effects_file:
+        (job.work / "mix").mkdir(parents=True, exist_ok=True)
+        (job.work / "mix" / "effects-9x16.wav").write_bytes(b"x")
+    heard = [{"word": w["text"], "start": w["start"], "end": w["end"]} for w in words]
+    monkeypatch.setattr(transcribe, "transcribe", lambda audio, keyterms, cache_dir: heard)
+    report = checks.run(job)
+    return report, next(c for c in report.checks if c.name == "Sound effects"), (job.ads / "review.html").read_text("utf-8")
+
+
+def test_sounds_off_pass_and_say_why(ad_job, tmp_path, video, monkeypatch):
+    off = {"on": False, "reason": "the ElevenLabs account is on the free plan", "cues": [], "clamped": 0}
+    report, check, sheet = sound_check(ad_job, tmp_path, video, monkeypatch, off, False)
+    assert check.ok and check.detail == "No sound effects: the ElevenLabs account is on the free plan."
+    assert "No sound effects: the ElevenLabs account is on the free plan." in sheet
+    assert report.sounds == {}
+
+
+def test_an_ad_made_before_sounds_existed_passes(ad_job, tmp_path, video, monkeypatch):
+    _, check, _ = sound_check(ad_job, tmp_path, video, monkeypatch, None, False)
+    assert check.ok and check.detail.startswith("No sound effects:")
+
+
+def test_cues_are_listed_on_the_sheet_and_clamped_ones_flagged(ad_job, tmp_path, video, monkeypatch):
+    cues = [{"role": "cut", "at": 1.5, "gain_db": 2.0, "rate": 1.0, "clamped": False},
+            {"role": "tick", "at": 4.0, "gain_db": 6.0, "rate": 1.0, "clamped": True}]
+    on = {"on": True, "reason": None, "cues": cues, "clamped": 1}
+    report, check, sheet = sound_check(ad_job, tmp_path, video, monkeypatch, on, True)
+    assert check.ok and "2 sound effects" in check.detail and "1 hit the level limit" in check.detail
+    assert report.sounds["9x16"][0].endswith("cut") and "hit the limit" in report.sounds["9x16"][1]
+    assert "0:01" in sheet and "tick" in sheet and "hit the limit" in sheet
+    assert "—" not in sheet and "–" not in sheet and "--" not in sheet.replace("<!--", "").replace("-->", "")
+
+
+def test_a_promised_effects_file_that_is_missing_fails(ad_job, tmp_path, video, monkeypatch):
+    on = {"on": True, "reason": None, "cues": [{"role": "cut", "at": 1.5, "gain_db": 0, "rate": 1, "clamped": False}],
+          "clamped": 0}
+    report, check, _ = sound_check(ad_job, tmp_path, video, monkeypatch, on, False)
+    assert not check.ok and not report.ok and "effects" in check.problems[0]
+
+
+def test_a_ratio_with_no_cues_does_not_fail_another_ratios_sounds(ad_job, tmp_path, video, monkeypatch):
+    """Each ratio's own stem is checked against that ratio's own cues: 9:16 has cues and its file, 4:5 none."""
+    words = cut_words(TEXT)
+    job = ad_job(words, 12.0)
+    ad = build_ads(job, tmp_path, video)
+    entries = json.loads((job.work / "render.json").read_text(encoding="utf-8"))
+    cue = {"role": "cut", "at": 1.5, "gain_db": 0, "rate": 1, "clamped": False}
+    entries["9x16"]["sounds"] = {"on": True, "reason": None, "cues": [cue], "clamped": 0, "stem": "effects-9x16.wav"}
+    entries["4x5"] = {**entries["9x16"], "file": ad.name,
+                      "sounds": {"on": False, "reason": "the ad has no picture changes to sound", "cues": [],
+                                 "clamped": 0, "stem": None}}
+    (job.work / "render.json").write_text(json.dumps(entries), encoding="utf-8")
+    (job.work / "mix").mkdir(parents=True, exist_ok=True)
+    (job.work / "mix" / "effects-9x16.wav").write_bytes(b"x")
+    monkeypatch.setattr(transcribe, "transcribe", lambda audio, keyterms, cache_dir:
+                        [{"word": w["text"], "start": w["start"], "end": w["end"]} for w in words])
+    check = next(c for c in checks.run(job).checks if c.name == "Sound effects")
+    assert check.ok and "1 sound effects" in check.detail
+    (job.work / "mix" / "effects-9x16.wav").unlink()
+    check = next(c for c in checks.run(job).checks if c.name == "Sound effects")
+    assert not check.ok and "9:16" in check.problems[0]
+
+
+def test_join_line_between_the_start_and_the_end():
+    assert checks.join_line({"t": 12.0, "before": "so", "after": "we"}) == "Between 'so' and 'we' at 0:12 (12.0 s)"
+    assert checks.join_line({"t": 0.0, "before": None, "after": "If"}) == \
+        "At the very start: listen that 'If' begins cleanly (0:00)."
+    assert checks.join_line({"t": 25.3, "before": "today", "after": None}) == \
+        "At the very end: listen that 'today' ends cleanly (0:25)."
+    assert checks.join_line({"t": 4.0, "before": None, "after": "then"}) == "Before 'then' at 0:04 (4.0 s)"
+
+
+def test_stills_include_each_graphic_at_its_fullest():
+    plan = resolved([(2.0, 4.0)], [])
+    graphics = [{"n": 1, "full_at": 5.5}, {"n": 2, "full_at": 9.25}]
+    got = dict(checks.still_times(plan, [], 1.0, end_start=12.0, duration=14.0, graphics=graphics))
+    assert got["Graphic 1"] == 5.5 and got["Graphic 2"] == 9.25
+    assert not [label for label, _ in checks.still_times(plan, [], 1.0, end_start=12.0, duration=14.0)
+                if label.startswith("Graphic")]

@@ -12,7 +12,9 @@ $font_faces
       #root { position: relative; width: 1080px; height: ${height}px; overflow: hidden; background: $deep; }
       /* The take's frame: the canvas, the area under the panel, or a framed card. */
       #take { position: absolute; left: ${take_left}px; top: ${take_top}px; width: ${take_w}px; height: ${take_h}px; overflow: hidden; z-index: $take_z;$take_style }
-      #win { position: absolute; left: ${win_left}px; top: ${win_top}px; width: ${src_w}px; height: ${src_h}px; }
+      #win { position: absolute; left: ${win_left}px; top: ${win_top}px; width: ${src_w}px; height: ${src_h}px; transform-origin: ${pop_ox}px ${pop_oy}px; }
+      /* The shutter flash: white over everything, its opacity set on each grid frame. */
+      #flash { position: absolute; inset: 0; background: #fff; opacity: 0; z-index: 60; pointer-events: none; }
       #frame { position: absolute; left: 0; top: 0; width: ${src_w}px; height: ${src_h}px; transform-origin: 0 0; }
       #aroll { position: absolute; inset: 0; width: ${src_w}px; height: ${src_h}px; object-fit: cover; }
       .bw { position: absolute; inset: 0; overflow: hidden; z-index: 5; }
@@ -33,16 +35,17 @@ $font_faces
       .w { display: inline-block; }
       /* A key word is 1.12 times the size; line-height 1 keeps the pill 1.18 em tall, inside the safe band. */
       .w.k { font-family: $display, serif; font-style: italic; font-weight: 400; font-size: 1.12em; line-height: 1; color: $highlight; letter-spacing: -0.02em; }
-      #end { position: absolute; inset: 0; background: $paper; z-index: 50; }
+      #end { position: absolute; inset: 0; background: $end_bg; z-index: 50; }
       #end .frame { position: absolute; inset: calc(30px * $sc); border: 1.5px solid $line; }
-      #end .h { font-size: calc(66px * $sc); }
+      #end .h { font-size: calc(66px * $sc); color: $end_ink; }
+      #end .h i, #end .eyebrow, #end .caps { color: $end_em; }
       /* The end card's words and logo sit straight on the card, so on a light card the logo multiplies away its own white box. */
       #endHead { z-index: auto; }
       #endLogo { display: block; margin: 0 auto calc(76px * $sc); width: calc(560px * $sc); height: calc(180px * $sc); object-fit: contain;$logo_blend }
       /* No logo: the client's name takes its place in the display font. */
-      #endLogo.wordmark { width: auto; height: auto; font-family: $display, serif; font-size: calc(72px * $sc); line-height: 1.1; color: $primary; letter-spacing: -0.025em; white-space: nowrap; }
+      #endLogo.wordmark { width: auto; height: auto; font-family: $display, serif; font-size: calc(72px * $sc); line-height: 1.1; color: $end_ink; letter-spacing: -0.025em; white-space: nowrap; }
       .btn { display: inline-block; margin-top: calc(46px * $sc); padding: calc(20px * $sc) calc(64px * $sc) calc(22px * $sc);
-        border-radius: 999px; background: $primary; color: $paper; font-family: $display, serif; font-size: calc(40px * $sc); letter-spacing: -0.01em; }
+        border-radius: 999px; background: $end_btn; color: $end_btn_ink; font-family: $display, serif; font-size: calc(40px * $sc); letter-spacing: -0.01em; }
 $synthetic
     </style>
   </head>
@@ -59,10 +62,12 @@ $synthetic
       </div>
 $panel
 $broll
+$graphics
 $lockup
 $headings
 $end_card
 $captions
+$flash_html
     </div>
 
     <script>
@@ -74,6 +79,12 @@ $captions
 
       // The take: a punch-in on every other cut, about the face, so each jump reads as meant.
       for (const [a, s, tx, ty] of DATA.states) tl.set("#frame", { scale: s, x: tx, y: ty }, a);
+      // The shutter flash on each visible camera change: the white and the new shot's punch settling, one set a
+      // grid frame (so a seek either way lands in the same place). 5 ms before the frame's line puts it on that frame
+      // (the renderer can seek a millisecond short of a frame's time, so 1 ms is too thin a lead).
+      const onFrame = (f) => Number((f / 30 - 0.005).toFixed(4));
+      for (const [f, o] of DATA.flash.white) tl.set("#flash", { opacity: o }, onFrame(f));
+      for (const [f, s] of DATA.flash.punch) tl.set("#win", { scale: s }, onFrame(f));
       // B-roll: a slow push on each cut-in.
       for (const [k, s, d] of DATA.broll) {
         tl.fromTo("#bw" + k, { scale: 1.0 }, { scale: 1.05, duration: d, ease: "none", transformOrigin: "50% 45%" }, s);
@@ -116,6 +127,8 @@ $captions
           tl.set("#w" + i, { color: DATA.colours.paper }, e);
         }
       }
+      // The motion graphics: each is one clip above the take and under the captions.
+$graphics_js
       tl.set({}, {}, DATA.duration);
       window.__timelines["main"] = tl;
     </script>

@@ -4,7 +4,7 @@ from the first hand-built ad's mix script.
 The voice gets an 80 Hz high-pass and is levelled to -16 LUFS (measured, then a linear gain). The
 bed is extended on a bar line with a 4 s crossfade when the ad outgrows it, flattened to -25 LUFS
 and ducked under the voice by a sidechain compressor; it lifts on the end card, fades in over 0.6 s
-and out over the last 1.4 s. The whole mix is levelled to -14 LUFS at -1.5 dBTP, two-pass and
+and out over the last 1.4 s. The whole mix is levelled to -14 LUFS at -2.0 dBTP, two-pass and
 linear. Measured on the stems, the bed sits a median of about 15 dB under the voice while they talk
 (12 to 18 dB passes): 0 to 3 dB under fought the voice, and 25 dB under couldn't be heard on a phone.
 Every bed is levelled to that: the ducked bed is measured against the voice once and its gain moved so the
@@ -17,14 +17,14 @@ import re
 import statistics
 from pathlib import Path
 
-from adeditor import media
+from adeditor import media, sfx
 
 RATE = 48000
 VOICE_PRE = f"highpass=f=80,aresample={RATE},aformat=channel_layouts=stereo"
 VOICE_TARGET = "loudnorm=I=-16:TP=-2:LRA=7"
 BED_FLAT = "loudnorm=I=-25:LRA=2:TP=-9"
 DUCK = "sidechaincompress=threshold=0.05:ratio=3:attack=80:release=1200:knee=6"
-FINAL_TARGET = "loudnorm=I=-14:TP=-1.5:LRA=11"
+FINAL_TARGET = "loudnorm=I=-14:TP=-2.0:LRA=11"  # -2.0, not -1.5: the effects' sharp attacks and the AAC encode need the room under the -1.3 check
 LIFT, LIFT_TIME = 2.0, 0.7  # the bed doubles over 0.7 s from the end card's start
 FADE_IN, FADE_OUT = 0.6, 1.4
 XFADE = 4.0  # a loop crossfades over 4 s
@@ -200,25 +200,48 @@ def bed_under_voice(voice_stem: Path, bed_stem: Path, words: list[dict]) -> dict
     return {"median_db": round(statistics.median(d for _, d in diffs), 1), "by_30s": by_30s}
 
 
+def summed(n: int) -> str:
+    """The graph that sums the voice, the ducked bed and the effects stem into [mix]: plain addition
+    (normalize=0), so nothing is ducked or scaled and the voice stays as it is."""
+    if n == 1:
+        return "[0:a]anull[mix]"
+    return f"{''.join(f'[{i}:a]' for i in range(n))}amix=inputs={n}:normalize=0:duration=first[mix]"
+
+
 def mix(voice: Path, bed: Path | None, silent: Path, out: Path, duration: float, end_start: float,
         bpm: float | None, bed_offset_db: float = 0.0, *, stems_dir: Path | None = None,
-        words: list[dict] | None = None) -> dict:
+        words: list[dict] | None = None, effects: dict | None = None) -> dict:
     """Mix the voice (and the bed, if there is one) under the silent render into `out`, levelled to
     -14 LUFS. The stems go to stems_dir (beside `out` when not given); with `words`, the bed's level
-    under the voice is measured on them. Returns {"voice_stem", "bed_stem", "lufs", "true_peak",
-    "bed_median_db", "bed_capped"} (bed_capped: the bed was so quiet the auto level stopped at +12 dB)."""
+    under the voice is measured on them. `effects` is {"events", "manifest", "offset_db"} (or None): the
+    cues are placed against the levelled voice stem's own loudness, built into one stem (<name>.wav in
+    stems_dir, effects.wav unless the effects dict names it) and summed beside the voice and the ducked bed in the same amix (normalize=0, not ducked,
+    the voice untouched) before the final two-pass loudnorm. Returns {"voice_stem", "bed_stem", "lufs",
+    "true_peak", "bed_median_db", "bed_capped", "effects", "effects_stem", "cues", "clamped"} (bed_capped:
+    the bed was so quiet the auto level stopped at +12 dB; effects: a stem went into the mix)."""
     out = Path(out)
-    st = stems(voice, bed, duration, end_start, bpm, bed_offset_db,
-               out_dir=Path(stems_dir) if stems_dir else out.parent, words=words)
-    inputs = ["-i", str(st["voice"])] + (["-i", str(st["bed"])] if st["bed"] else [])
-    both = "[0:a][1:a]amix=inputs=2:normalize=0:duration=first[mix]" if st["bed"] else "[0:a]anull[mix]"
+    stems_dir = Path(stems_dir) if stems_dir else out.parent
+    st = stems(voice, bed, duration, end_start, bpm, bed_offset_db, out_dir=stems_dir, words=words)
+    cues, effects_stem = [], None
+    name = (effects or {}).get("name", "effects")
+    if effects and effects.get("events"):
+        voice_lufs, _ = measure(st["voice"])
+        cues = sfx.place(effects["events"], duration, voice_lufs, effects["manifest"], effects.get("offset_db", 0.0))
+    if cues:
+        effects_stem = sfx.stem(cues, effects["manifest"], duration, stems_dir / f"{name}.wav")
+    else:
+        (stems_dir / f"{name}.wav").unlink(missing_ok=True)
+    stem_files = [st["voice"]] + ([st["bed"]] if st["bed"] else []) + ([effects_stem] if effects_stem else [])
+    inputs = [a for f in stem_files for a in ("-i", str(f))]
+    both = summed(len(stem_files))
     level = _linear(FINAL_TARGET, _measured(_stderr(
         [*inputs, "-filter_complex", f"{both};[mix]{FINAL_TARGET}:print_format=json", "-f", "null", "-"])))
-    video_input = len(inputs) // 2
+    video_input = len(stem_files)
     media.run(["ffmpeg", "-y", "-v", "error", *inputs, "-i", str(silent),
                "-filter_complex", f"{both};[mix]{level},aresample={RATE}[a]",
                "-map", f"{video_input}:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
                "-ar", str(RATE), "-ac", "2", "-t", f"{duration:.3f}", "-movflags", "+faststart", str(out)])
     lufs, peak = measure(out)
     return {"voice_stem": st["voice"], "bed_stem": st["bed"], "lufs": lufs, "true_peak": peak,
-            "bed_median_db": st["median_db"], "bed_capped": st["capped"]}
+            "bed_median_db": st["median_db"], "bed_capped": st["capped"], "effects": effects_stem is not None,
+            "effects_stem": effects_stem, "cues": cues, "clamped": sum(1 for c in cues if c["clamped"])}

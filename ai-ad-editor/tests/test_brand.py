@@ -406,7 +406,7 @@ def _roles(css, meta=None):
 
 
 def test_framework_default_colours_are_not_the_brand():
-    css = (":root{--bs-primary:#0d6efd;--bs-danger:#dc3545;--brand-main:#7A2E3B}"
+    css = (":root{--bs-primary:#0d6efd;--bs-danger:#dc3545;--brand-main:#7A2E3B}.logo{color:var(--brand-main)}"
            "body{color:#2A2A2A;background:#FFFFFF}.btn{background:#0d6efd}.a{color:#0d6efd}.b{color:#0099FF}")
     roles = _roles(css)
     assert roles["primary"] == "#7A2E3B"
@@ -416,9 +416,11 @@ def test_framework_default_colours_are_not_the_brand():
         assert default in brand.FRAMEWORK_DEFAULTS
 
 
-def test_a_framework_default_is_used_only_when_nothing_else_is_left():
-    roles = _roles(":root{--bs-primary:#0d6efd}.a{color:#0d6efd}")
-    assert roles["primary"] == "#0D6EFD"
+def test_a_framework_default_is_used_only_when_the_site_names_it_as_its_brand():
+    assert _roles(":root{--brand-primary:#0d6efd}.a{color:var(--brand-primary)}")["primary"] == "#0D6EFD"
+    # with nothing named, a framework blue is a guess at best, so the site's own darkest colour wins
+    roles = _roles("body{color:#1f1f21;background:#fff}.a{color:#0d6efd}.b{color:#0d6efd}")
+    assert roles["primary"] == "#1F1F21"
 
 
 def test_framer_blue_is_skipped_on_a_framer_site():
@@ -477,3 +479,111 @@ def test_a_failed_re_run_leaves_a_good_kit_untouched(kit, root, web, monkeypatch
     out = capsys.readouterr().out
     assert "couldn't read their site" in out and "existing kit is unchanged" in out
     assert (root / "clients/northbank/brand/kit.json").read_text() == before
+
+
+BOOTSTRAP_ROOT = (":root{--bs-blue:#0d6efd;--bs-primary:#0d6efd;--bs-primary-text-emphasis:#052c65;"
+                  "--bs-primary-bg-subtle:#cfe2ff;--bs-body-color:#212529;--bs-body-bg:#fff}")
+
+
+def test_framework_prefixed_variables_never_count_as_a_named_brand_colour():
+    css = BOOTSTRAP_ROOT + "body{color:#212529;background:#fff}.buy{background:#c87e1e}.buy:hover{background:#c87e1e}"
+    found = brand.pick_colours(css, {})
+    assert found["primary"] == "#c87e1e"
+    for prefix in brand.FRAMEWORK_VAR_PREFIXES:
+        css = f":root{{{prefix}primary:#123abc}}.buy{{background:#c87e1e}}"
+        assert brand.pick_colours(css, {})["primary"] == "#c87e1e", prefix
+    assert {"--bs-", "--tw-", "--wp--preset--", "--wp-admin-", "--chakra-", "--mantine-", "--mdc-",
+            "--swiper-"} <= set(brand.FRAMEWORK_VAR_PREFIXES)
+
+
+def test_a_colour_used_only_for_error_states_is_never_primary_or_accent():
+    css = (".error{color:#cc2222;border-color:#cc2222}.form-success{color:#22aa44}.field:invalid{border:1px solid #cc2222}"
+           ".alert-warning{background:#e0a800}.buy{background:#c87e1e}")
+    found = brand.pick_colours(css, {})
+    assert found["primary"] == "#c87e1e"
+    assert found["accent"] not in ("#cc2222", "#22aa44", "#e0a800")
+
+
+def test_a_colour_also_used_outside_a_state_rule_still_counts():
+    css = ".error{color:#c87e1e}.buy{background:#c87e1e}"
+    assert brand.pick_colours(css, {})["primary"] == "#c87e1e"
+
+
+def guess_site(css, meta=""):
+    class Web(FakeWeb):
+        def __call__(self, url, accept="*/*"):
+            if url.endswith("/guess"):
+                return (f"<html><head><title>Guess</title>{meta}<style>{css}</style></head><body></body></html>".encode(),
+                        "text/html", url)
+            return super().__call__(url, accept)
+    return Web()
+
+
+def test_a_read_with_no_named_colour_and_no_theme_colour_says_it_is_a_guess(root, capsys, monkeypatch):
+    monkeypatch.setattr(brand, "http_get", guess_site(".buy{background:#c87e1e}.a{color:#c87e1e}"))
+    kit = brand.build("guess", "https://northbank.test/guess", fetch=guess_site(".buy{background:#c87e1e}"))
+    assert kit["colours_note"] == brand.GUESS_NOTE
+    assert "check them against the logo and buttons" in brand.GUESS_NOTE
+    assert brand.GUESS_NOTE in (root / "clients/guess/brand/swatch.html").read_text()
+    assert cli.main(["client", "new", "guess2", "https://northbank.test/guess"]) == 0
+    out = capsys.readouterr().out
+    assert out.index("Read ") < out.index(brand.GUESS_NOTE)
+
+
+def test_a_named_brand_colour_or_a_theme_colour_is_not_a_guess(root):
+    named = brand.build("named", "https://northbank.test/guess", fetch=guess_site(":root{--brand-primary:#c87e1e}.a{color:var(--brand-primary)}"))
+    assert not named.get("colours_note")
+    themed = brand.build("themed", "https://northbank.test/guess",
+                         fetch=guess_site(".buy{background:#c87e1e}", '<meta name="theme-color" content="#c87e1e">'))
+    assert not themed.get("colours_note")
+
+
+def test_a_framework_only_variable_is_still_a_guess(root):
+    kit = brand.build("fw", "https://northbank.test/guess", fetch=guess_site(BOOTSTRAP_ROOT + ".buy{background:#c87e1e}"))
+    assert kit["colours"]["primary"] == "#C87E1E" and kit["colours_note"] == brand.GUESS_NOTE
+
+
+@pytest.mark.parametrize("value, family", [
+    ("var(--x, inherit))", None), ("PitchSans !important", "PitchSans"), ("'Lora', serif", "Lora"),
+    ("var(--font, 'Lora', serif)", "Lora"), ("inherit", None), ("var(--a)", None), ("system-ui, 'DM Sans'", "DM Sans"),
+])
+def test_family_of_cleans_each_part_of_a_font_value(value, family):
+    assert brand.family_of(value) == family
+
+
+def test_with_nothing_named_a_colour_set_in_one_variable_and_used_nowhere_is_noise():
+    css = ("body{color:#1f1f21;background:#fff}:root{--wcag-focus-ring-color:#8FEB25}"
+           ".a{color:#1f1f21}.b{color:#1f1f21}")
+    found = brand.pick_colours(css, {})
+    assert found["primary"] is None and found["guessed"] is True
+    assert brand.pick_colours(css + ".shop{background:#1990c6}", {})["primary"] == "#1990c6"
+
+
+def test_a_palette_colour_used_through_var_counts_as_used():
+    css = ":root{--color-orange:#e8590c;--color-ink:#1b1b1b}.btn{background:var(--color-orange)}body{color:var(--color-ink)}"
+    assert brand.pick_colours(css, {})["primary"] == "#e8590c"
+
+
+def test_an_unused_named_variable_loses_and_a_used_one_still_wins():
+    css = ":root{--cyl-eln-accent:#1a4d8f}.buy{background:#c87e1e}.buy2{border-color:#c87e1e}"
+    found = brand.pick_colours(css, {})
+    assert found["primary"] == "#c87e1e" and found["accent"] != "#1a4d8f" and found["guessed"] is True
+    used = css + ".widget{color:var(--cyl-eln-accent)}"
+    found = brand.pick_colours(used, {})
+    assert found["accent"] == "#1a4d8f" and found["guessed"] is False
+
+
+def test_a_named_variable_used_through_another_variable_counts():
+    css = ":root{--brand-primary:#7a2e3b;--btn:var(--brand-primary)}.buy{background:var(--btn)}"
+    found = brand.pick_colours(css, {})
+    assert found["primary"] == "#7a2e3b" and found["guessed"] is False
+
+
+def test_setting_the_colours_by_hand_clears_the_guess_note(root, web):
+    kit = brand.build("northbank", SITE, fetch=web)
+    kit["colours_note"] = brand.GUESS_NOTE
+    brand.save("northbank", kit)
+    brand.write_swatch("northbank", kit)
+    brand.set_colours("northbank", primary="#1E4D6B")
+    assert "colours_note" not in brand.read("northbank")
+    assert brand.GUESS_NOTE not in (root / "clients/northbank/brand/swatch.html").read_text()

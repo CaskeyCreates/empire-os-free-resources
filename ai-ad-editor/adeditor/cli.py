@@ -10,7 +10,7 @@ import traceback
 
 COMMANDS: dict[str, dict] = {}
 # Modules imported by main() so their @command decorators run. Later tasks append here.
-MODULES: list[str] = ["adeditor.doctor", "adeditor.retakes", "adeditor.cutplan", "adeditor.speed", "adeditor.brand", "adeditor.broll", "adeditor.plan", "adeditor.render", "adeditor.checks"]
+MODULES: list[str] = ["adeditor.doctor", "adeditor.retakes", "adeditor.cutplan", "adeditor.speed", "adeditor.brand", "adeditor.broll", "adeditor.plan", "adeditor.render", "adeditor.preview", "adeditor.checks"]
 
 
 def command(name: str, help: str = "", args=None):
