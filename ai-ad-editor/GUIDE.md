@@ -6,6 +6,8 @@ This guide sets up Claude to do that edit for you. You put the video in a folder
 
 You don't need to code. You'll install a few things (Claude does most of it for you), open an ElevenLabs account and a free Pixabay account, and then you just talk to Claude.
 
+**The code is free on GitHub:** [github.com/CaskeyCreates/empire-os-free-resources](https://github.com/CaskeyCreates/empire-os-free-resources). You don't need to download it yourself; Claude does that for you in Step 4.
+
 **Two ways to use this guide.** Follow the steps yourself, or paste this whole guide into Claude Code and say "walk me through this, one step at a time". Either works.
 
 ---
