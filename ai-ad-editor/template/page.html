@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-resolution="custom">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=$height" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+$font_faces
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1080px; height: ${height}px; overflow: hidden; background: $deep; }
+      body { font-family: $body, sans-serif; color: $ink; }
+      #root { position: relative; width: 1080px; height: ${height}px; overflow: hidden; background: $deep; }
+      /* The take's frame: the canvas, the area under the panel, or a framed card. */
+      #take { position: absolute; left: ${take_left}px; top: ${take_top}px; width: ${take_w}px; height: ${take_h}px; overflow: hidden; z-index: $take_z;$take_style }
+      #win { position: absolute; left: ${win_left}px; top: ${win_top}px; width: ${src_w}px; height: ${src_h}px; }
+      #frame { position: absolute; left: 0; top: 0; width: ${src_w}px; height: ${src_h}px; transform-origin: 0 0; }
+      #aroll { position: absolute; inset: 0; width: ${src_w}px; height: ${src_h}px; object-fit: cover; }
+      .bw { position: absolute; inset: 0; overflow: hidden; z-index: 5; }
+      .bw video { position: absolute; inset: 0; width: 1080px; height: ${height}px; object-fit: cover; }
+      .paper { position: absolute; left: 0; top: 0; width: 1080px; height: ${paper_h}px; background: $paper_fade; }
+      .head { position: absolute; left: 0; width: 1080px; text-align: center; z-index: 30; }
+      .head.centred { top: 0; height: ${height}px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+      /* Every text row stays on one line (page.py shrinks one that would not fit), so the layout knows where the text ends. */
+      .eyebrow { font-family: $display, serif; font-style: italic; font-size: calc(38px * $sc); line-height: 1.25; color: $accent_dark; letter-spacing: -0.01em; white-space: nowrap; }
+      .rule { width: calc(64px * $sc); height: 2px; background: $accent; margin: calc(20px * $sc) auto calc(22px * $sc); }
+      .h { font-family: $display, serif; font-size: calc(58px * $sc); line-height: 1.12; color: $primary; letter-spacing: -0.025em; white-space: nowrap; }
+      .h i { font-style: italic; color: $accent_dark; }
+      .caps { font-family: $body, sans-serif; font-weight: 700; font-size: calc(24px * $sc); line-height: 1.25; letter-spacing: 0.22em; color: $accent_dark; text-transform: uppercase; margin-top: calc(20px * $sc); white-space: nowrap; }
+      .cap { position: absolute; left: 0; width: 1080px; text-align: center; z-index: 40; }
+      .pill { display: inline-block; padding: 0.2em 0.43em 0.23em; border-radius: 0.3em; background: $plate;
+        font-family: $body, sans-serif; font-weight: 700; line-height: 1.18; color: $paper; letter-spacing: -0.005em;
+        box-shadow: 0 10px 30px rgba(0,0,0,.18); white-space: nowrap; }
+      .w { display: inline-block; }
+      /* A key word is 1.12 times the size; line-height 1 keeps the pill 1.18 em tall, inside the safe band. */
+      .w.k { font-family: $display, serif; font-style: italic; font-weight: 400; font-size: 1.12em; line-height: 1; color: $highlight; letter-spacing: -0.02em; }
+      #end { position: absolute; inset: 0; background: $paper; z-index: 50; }
+      #end .frame { position: absolute; inset: calc(30px * $sc); border: 1.5px solid $line; }
+      #end .h { font-size: calc(66px * $sc); }
+      /* The end card's words and logo sit straight on the card, so on a light card the logo multiplies away its own white box. */
+      #endHead { z-index: auto; }
+      #endLogo { display: block; margin: 0 auto calc(76px * $sc); width: calc(560px * $sc); height: calc(180px * $sc); object-fit: contain;$logo_blend }
+      .btn { display: inline-block; margin-top: calc(46px * $sc); padding: calc(20px * $sc) calc(64px * $sc) calc(22px * $sc);
+        border-radius: 999px; background: $primary; color: $paper; font-family: $display, serif; font-size: calc(40px * $sc); letter-spacing: -0.01em; }
+$synthetic
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="$duration" data-width="1080" data-height="$height">
+      <div id="take" data-layout-allow-occlusion data-layout-allow-overflow>
+        <div id="win" data-layout-allow-occlusion data-layout-allow-overflow>
+          <div id="frame" data-layout-allow-occlusion data-layout-allow-overflow>
+            <video id="aroll" src="assets/aroll.mp4" muted playsinline data-start="0" data-duration="$aroll_duration"
+              data-media-start="0" data-track-index="0" data-has-audio="false" data-volume="0"
+              data-layout-allow-occlusion data-layout-allow-overflow></video>
+          </div>
+        </div>
+      </div>
+$panel
+$broll
+$lockup
+$headings
+$end_card
+$captions
+    </div>
+
+    <script>
+      // The timeline is built synchronously: in HyperFrames 0.7.5 one built after an await renders no frames.
+      window.__timelines = window.__timelines || {};
+      const DATA = $data;
+      const tl = gsap.timeline({ paused: true });
+      const at = (t) => Math.max(0, t);
+
+      // The take: a punch-in on every other cut, about the face, so each jump reads as meant.
+      for (const [a, s, tx, ty] of DATA.states) tl.set("#frame", { scale: s, x: tx, y: ty }, a);
+      // B-roll: a slow push on each cut-in.
+      for (const [k, s, d] of DATA.broll) {
+        tl.fromTo("#bw" + k, { scale: 1.0 }, { scale: 1.05, duration: d, ease: "none", transformOrigin: "50% 45%" }, s);
+      }
+
+      // Headings over the space above the head: paper in, words land, then leave.
+      function heading(paper, items, start, end, enter) {
+        if (enter) {
+          tl.fromTo(paper, { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, start);
+          items.forEach((el, i) => tl.fromTo(el, { opacity: 0, y: 14, filter: "blur(6px)" },
+            { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, start + 0.12 + i * 0.09));
+        }
+        tl.to(items.slice().reverse(), { opacity: 0, filter: "blur(5px)", duration: 0.2, stagger: 0.03, ease: "power2.in" }, at(end - 0.34));
+        tl.to(paper, { opacity: 0, duration: 0.22, ease: "power2.in" }, at(end - 0.26));
+        tl.set([paper, ...items], { opacity: 0 }, at(end - 0.02));
+      }
+      // The offer lockup is on the first frame already: it is the thumbnail.
+      heading(DATA.lockup.paper, DATA.lockup.items, DATA.lockup.start, DATA.lockup.end, DATA.lockup.enter);
+      for (const h of DATA.headings) heading(h.paper, h.items, h.start, h.end, h.enter);
+
+      // The panel layout: between the text blocks, the panel shows the logo and the callout.
+      if (DATA.idle.length) tl.set("#idle", { opacity: 0 }, 0);
+      for (const [a, b] of DATA.idle) {
+        tl.fromTo("#idle", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, a);
+        tl.to("#idle", { opacity: 0, duration: 0.25, ease: "power2.in" }, b - 0.25);
+      }
+
+      // End card: the offer lockup and the button.
+      tl.set("#end", { opacity: 0 }, 0);
+      tl.fromTo("#end", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, DATA.end.start);
+      tl.fromTo(DATA.end.items, { opacity: 0, y: 16, filter: "blur(6px)" },
+        { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.55, stagger: 0.08, ease: "expo.out" }, DATA.end.start + 0.2);
+
+      // Captions: each group lands, and the word being said lights up.
+      for (const [gi, a, words] of DATA.caps) {
+        tl.fromTo("#pill" + gi, { opacity: 0, y: 10, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.14, ease: "power3.out" }, a);
+        for (const [i, s, e, k] of words) {
+          if (k) continue;
+          tl.set("#w" + i, { color: DATA.colours.highlight }, Math.max(a, s));
+          tl.set("#w" + i, { color: DATA.colours.paper }, e);
+        }
+      }
+      tl.set({}, {}, DATA.duration);
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

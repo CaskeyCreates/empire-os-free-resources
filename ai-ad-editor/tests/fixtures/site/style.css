@@ -1,0 +1,7 @@
+/* An invented site for the tests. Merriweather is a Google family; Proxima Nova is not. */
+@font-face { font-family: "Proxima Nova"; src: url("fonts/proxima-nova.woff2") format("woff2"); }
+:root { --brand-primary: #1E4D6B; --brand-accent: #D9822B; }
+body { font-family: "Proxima Nova", Helvetica, sans-serif; color: #23303A; background: #F6F1E7; }
+h1, h2 { font-family: "Merriweather", Georgia, serif; color: #1E4D6B; }
+.btn { background: #1E4D6B; color: #F6F1E7; }
+.tag { color: #D9822B; }

@@ -1,0 +1,48 @@
+{
+  "name": "Northbank Physio",
+  "site": "https://northbank-physio.example/",
+  "colours": {
+    "primary": "#1E4D6B",
+    "deep": "#183F58",
+    "paper": "#F6F1E7",
+    "accent": "#D9822B",
+    "accent_dark": "#8F5516",
+    "highlight": "#E39A4F",
+    "ink": "#23303A"
+  },
+  "fonts": {
+    "display": {
+      "family": "Merriweather",
+      "files": {
+        "regular": "fonts/merriweather-regular.woff2",
+        "italic": "fonts/merriweather-italic.woff2",
+        "bold": "fonts/merriweather-bold.woff2"
+      },
+      "source": "google",
+      "matched_from": null,
+      "note": null
+    },
+    "body": {
+      "family": "Inter",
+      "files": {
+        "regular": "fonts/inter-regular.woff2",
+        "italic": "fonts/inter-italic.woff2",
+        "bold": "fonts/inter-bold.woff2"
+      },
+      "source": "google",
+      "matched_from": null,
+      "note": null
+    }
+  },
+  "logo": null,
+  "lockup": {
+    "callout": "For desk workers with back pain",
+    "offer": ["Six weeks to moving freely", "In clinic or online"],
+    "detail": null,
+    "button": "Learn more"
+  },
+  "keyterms": [],
+  "music": null,
+  "music_bpm": null,
+  "approved": false
+}
