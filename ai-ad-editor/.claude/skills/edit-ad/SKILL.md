@@ -40,7 +40,7 @@ It prints what it would cut. Read the whole transcript yourself, with each word'
 uv run python -c "import json,sys; [print(i, round(w['start'],2), w['word']) for i,w in enumerate(json.load(open(sys.argv[1]))['words'])]" "clients/<client>/work/<stem>/transcript.json"
 ```
 
-Add any retake the rules missed to `clients/<client>/work/<stem>/strikes.json`: a strike is `{"from": <first word number>, "to": <last word number>, "why": "Claude: <short reason>"}`, using the numbers that command prints, and strikes can't overlap. Keep the last full take of each line.
+The rules only find retakes that open alike and fillers, so read every line yourself. Strike any earlier try at a line the rules missed, and any talk that isn't the take: someone else speaking, a TV or radio in the background, or setup chatter before the first line and after the last. Add each to `clients/<client>/work/<stem>/strikes.json`: a strike is `{"from": <first word number>, "to": <last word number>, "why": "Claude: <short reason>"}`, using the numbers that command prints, and strikes can't overlap. Keep the last full take of each line.
 
 Tell the person what will be cut, in a few plain lines. Ask: "Cut these?" Wait for a yes.
 
@@ -139,7 +139,7 @@ uv run adeditor render <client> "<video>"
 uv run adeditor check <client> "<video>"
 ```
 
-Then open the stills in `clients/<client>/ads/<stem>/stills/` and look at them: the lockup reads, nothing covers the face, headings and B-roll sit right, the end card is clean, and no price or fine print shows. Fix a problem with a plan change, then render all three again and check again: the three ads share the cut and the plan, so the check fails any ad made before a change. Render one ratio alone only to retry one whose render stopped with an error (the `ad-notes` skill shows how). If the check says the music is too loud or can't be heard, change `bed_offset_db` in `plan.json` (between -6 and 6) and render again.
+Then open the stills in `clients/<client>/ads/<stem>/stills/` and look at them: the lockup reads, nothing covers the face, headings and B-roll sit right, the end card is clean, and no price or fine print shows. Fix a problem with a plan change, then render all three again and check again: the three ads share the cut and the plan, so the check fails any ad made before a change. Render one ratio alone only to retry one whose render stopped with an error (the `ad-notes` skill shows how). If the check says the music is too loud or can't be heard, change `bed_offset_db` in `plan.json` (between -3 and 3; 0 is the music 15 dB under the voice, negative is quieter, positive louder) and render again.
 
 ## 7. Report
 

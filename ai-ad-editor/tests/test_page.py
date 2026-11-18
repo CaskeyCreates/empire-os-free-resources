@@ -62,7 +62,7 @@ def test_page_uses_the_kit_and_no_reference_ad_values(ad_job):
 
     lockup = kit["lockup"]
     said = " ".join([w["text"] for w in words] + [lockup["callout"], *lockup["offer"], lockup["button"],
-                                                  "You don't have to wait"])
+                                                  "You don't have to wait", kit["name"]])  # no logo: the name stands in
     allowed = set(re.findall(r"[a-z']+", said.lower()))
     body = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S)
     shown = re.findall(r"[a-z']+", re.sub(r"<[^>]+>", " ", body).replace("&#x27;", "'").lower())
@@ -425,3 +425,16 @@ def test_the_page_records_a_covered_mouth_and_warns_of_a_caption_past_its_card(a
     monkeypatch.setattr(layout, "window", short_card)
     _, facts, _ = page_of(job, "9x16")
     assert any("run past the bottom of the picture" in w for w in facts["warnings"])
+
+
+def test_an_end_card_with_no_logo_sets_the_clients_name_in_the_display_font(ad_job):
+    words, length = words_and_length()
+    job = ad_job(words, length, plan={})
+    kit = json.loads((job.brand / "kit.json").read_text(encoding="utf-8"))
+    kit["logo"] = None
+    (job.brand / "kit.json").write_text(json.dumps(kit), encoding="utf-8")
+    html = page.build(job, "9x16").read_text(encoding="utf-8")
+    assert "<img id=\"endLogo\"" not in html
+    assert re.search(r'<div id="endLogo" class="wordmark"[^>]*>%s</div>' % re.escape(kit["name"]), html)
+    assert re.search(r"#endLogo\.wordmark \{[^}]*font-family: [^;]*;", html)
+    assert '"#endLogo"' in html  # it still animates in with the card

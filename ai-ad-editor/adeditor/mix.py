@@ -7,6 +7,8 @@ and ducked under the voice by a sidechain compressor; it lifts on the end card, 
 and out over the last 1.4 s. The whole mix is levelled to -14 LUFS at -1.5 dBTP, two-pass and
 linear. Measured on the stems, the bed sits a median of about 15 dB under the voice while they talk
 (12 to 18 dB passes): 0 to 3 dB under fought the voice, and 25 dB under couldn't be heard on a phone.
+Every bed is levelled to that: the ducked bed is measured against the voice once and its gain moved so the
+median lands on 15 dB under; the plan's bed_offset_db then moves it from there (-3 is 18 dB under, +3 is 12).
 
 Filters: https://ffmpeg.org/ffmpeg-filters.html (loudnorm, sidechaincompress, acrossfade, amix, ebur128)."""
 import json
@@ -29,6 +31,9 @@ XFADE = 4.0  # a loop crossfades over 4 s
 OUTRO = 8.0  # and leaves the first pass at least this far before the bed's own ending
 LOOP_MARGIN = 1.0  # a looped bed runs this much past the ad, so the trim never runs short
 VOICED = -70.0  # a momentary reading of the voice under this is no speech
+BED_TARGET_DB = 15.0  # the bed's median under the voice at bed_offset_db 0
+BED_MAX_BOOST_DB = 12.0  # the most the auto level lifts a very quiet bed
+BED_OFFSET_LIMIT = 3.0  # bed_offset_db runs -3 (18 dB under) to +3 (12 dB under), inside the check's 12 to 18
 
 
 def _stderr(args: list) -> str:
@@ -104,10 +109,13 @@ def _bed_chain(spans, duration: float, end_start: float, offset_db: float) -> st
 
 
 def stems(voice: Path, bed: Path | None, duration: float, end_start: float, bpm: float | None,
-          bed_offset_db: float = 0.0, *, out_dir: Path) -> dict:
+          bed_offset_db: float = 0.0, *, out_dir: Path, words: list[dict] | None = None) -> dict:
     """Render the levelled voice and the ducked bed alone, each the ad's length, to out_dir/voice.wav
     and out_dir/bed.wav (32-bit float, so nothing is lost before the final mix). The bed is None when
-    there's no bed."""
+    there's no bed. With `words`, the bed is levelled once: the first render is measured against the
+    voice, then its gain is moved so the median lands on BED_TARGET_DB under, and bed_offset_db (kept
+    within +/-BED_OFFSET_LIMIT) moves it from there. Without words there is nothing to measure against,
+    so only the offset applies."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     voice_out, bed_out = out_dir / "voice.wav", out_dir / "bed.wav"
@@ -120,13 +128,28 @@ def stems(voice: Path, bed: Path | None, duration: float, end_start: float, bpm:
         media.run(["ffmpeg", "-y", "-v", "error", "-i", str(voice), "-filter_complex", f"{levelled}[v]",
                    "-map", "[v]", *wav, str(voice_out)])
         bed_out.unlink(missing_ok=True)
-        return {"voice": voice_out, "bed": None}
+        return {"voice": voice_out, "bed": None, "median_db": None, "capped": False}
     spans = bed_spans(_length(bed), duration, bpm)
-    graph = ";".join([f"{levelled},asplit[v][vsc]", _bed_chain(spans, duration, end_start, bed_offset_db),
-                      f"[bed][vsc]{DUCK}[duck]"])
-    media.run(["ffmpeg", "-y", "-v", "error", "-i", str(voice), "-i", str(bed), "-filter_complex", graph,
-               "-map", "[v]", *wav, str(voice_out), "-map", "[duck]", *wav, str(bed_out)])
-    return {"voice": voice_out, "bed": bed_out}
+    offset = max(-BED_OFFSET_LIMIT, min(BED_OFFSET_LIMIT, bed_offset_db))
+
+    def render(gain_db: float) -> None:
+        graph = ";".join([f"{levelled},asplit[v][vsc]", _bed_chain(spans, duration, end_start, gain_db),
+                          f"[bed][vsc]{DUCK}[duck]"])
+        media.run(["ffmpeg", "-y", "-v", "error", "-i", str(voice), "-i", str(bed), "-filter_complex", graph,
+                   "-map", "[v]", *wav, str(voice_out), "-map", "[duck]", *wav, str(bed_out)])
+
+    render(0.0 if words else offset)
+    median, capped = None, False
+    if words:
+        median = bed_under_voice(voice_out, bed_out, words)["median_db"]
+        if median is not None:
+            want = median - BED_TARGET_DB
+            capped = want > BED_MAX_BOOST_DB  # a nearly silent bed isn't lifted by tens of dB
+            render(round(min(want, BED_MAX_BOOST_DB) + offset, 2))
+            median = bed_under_voice(voice_out, bed_out, words)["median_db"]  # the final level, measured once
+        else:  # a silent bed can't be levelled; the check reports it
+            render(offset)
+    return {"voice": voice_out, "bed": bed_out, "median_db": median, "capped": capped}
 
 
 def measure(path: Path) -> tuple[float, float]:
@@ -183,9 +206,10 @@ def mix(voice: Path, bed: Path | None, silent: Path, out: Path, duration: float,
     """Mix the voice (and the bed, if there is one) under the silent render into `out`, levelled to
     -14 LUFS. The stems go to stems_dir (beside `out` when not given); with `words`, the bed's level
     under the voice is measured on them. Returns {"voice_stem", "bed_stem", "lufs", "true_peak",
-    "bed_median_db"}."""
+    "bed_median_db", "bed_capped"} (bed_capped: the bed was so quiet the auto level stopped at +12 dB)."""
     out = Path(out)
-    st = stems(voice, bed, duration, end_start, bpm, bed_offset_db, out_dir=Path(stems_dir) if stems_dir else out.parent)
+    st = stems(voice, bed, duration, end_start, bpm, bed_offset_db,
+               out_dir=Path(stems_dir) if stems_dir else out.parent, words=words)
     inputs = ["-i", str(st["voice"])] + (["-i", str(st["bed"])] if st["bed"] else [])
     both = "[0:a][1:a]amix=inputs=2:normalize=0:duration=first[mix]" if st["bed"] else "[0:a]anull[mix]"
     level = _linear(FINAL_TARGET, _measured(_stderr(
@@ -196,5 +220,5 @@ def mix(voice: Path, bed: Path | None, silent: Path, out: Path, duration: float,
                "-map", f"{video_input}:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
                "-ar", str(RATE), "-ac", "2", "-t", f"{duration:.3f}", "-movflags", "+faststart", str(out)])
     lufs, peak = measure(out)
-    under = bed_under_voice(st["voice"], st["bed"], words)["median_db"] if st["bed"] and words else None
-    return {"voice_stem": st["voice"], "bed_stem": st["bed"], "lufs": lufs, "true_peak": peak, "bed_median_db": under}
+    return {"voice_stem": st["voice"], "bed_stem": st["bed"], "lufs": lufs, "true_peak": peak,
+            "bed_median_db": st["median_db"], "bed_capped": st["capped"]}

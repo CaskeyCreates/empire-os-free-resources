@@ -21,7 +21,7 @@ MAX_HEADINGS = 2
 END_CARD = 3.2
 CARD_LEAD = 0.2  # the end card starts this long before speech ends
 DEFAULT_HOLD = 0.7
-BED_LIMIT = 6.0
+BED_LIMIT = 3.0  # bed_offset_db: -3 is 18 dB under the voice, 0 is 15, +3 is 12
 KEYS = {"lockup", "headings", "key_words", "broll", "end_card", "bed_offset_db"}
 
 
@@ -160,6 +160,12 @@ def _headings(items, kept: Kept, errors: list[str]) -> list[dict]:
         if not isinstance(lines, list) or not lines or not all(isinstance(s, str) and s.strip() for s in lines):
             errors.append(f"{label} needs its lines as a list of text.")
         else:
+            for k, line in enumerate(lines, 1):
+                if line.count("*") % 2:
+                    what = ("closes an italic with * that was never opened"
+                            if line.rstrip().endswith("*") and not line.lstrip().startswith("*")
+                            else "opens an italic with * but doesn't close it")
+                    errors.append(f"{label}, line {k} {what}. Each line needs its own pair.")
             said = " ".join(lines)
             if kept.find(said) is None:
                 errors.append(f'{label} ("{said.replace("*", "")}") isn\'t a run of the speaker\'s kept words: '

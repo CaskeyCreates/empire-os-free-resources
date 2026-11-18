@@ -395,3 +395,10 @@ def test_only_web_links_reach_the_review_sheet():
     assert "javascript" not in line and 'href="https://pixabay.com"' in line
     line = checks._credit_line("111", {"user": "Maker", "user_url": "https://www.pexels.com/@maker", "url": "http://www.pexels.com/video/111/"})
     assert 'href="https://www.pexels.com/@maker"' in line and 'href="http://www.pexels.com/video/111/"' in line
+
+
+def test_review_says_so_when_an_ad_has_no_broll(ad_job, tmp_path, video, monkeypatch):
+    report, html = review_for(ad_job, tmp_path, video, monkeypatch, [], {})
+    assert report.credits == []
+    assert "<h2>Credits</h2>\n<p>No B-roll in this ad.</p>" in html
+    assert "Keep these credits" not in html

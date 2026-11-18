@@ -86,7 +86,7 @@ def test_phrases_resolve_on_the_cut_clock(setup):
                            "detail": None, "button": "Learn more"}
     assert r["key_words"] == [{"word": "stuck", "only_in": None}, {"word": "do", "only_in": "actually do it"}]
     assert r["end_card"] == 3.2
-    assert r["bed_offset_db"] == 6  # clamped
+    assert r["bed_offset_db"] == 3  # clamped to -3..+3, where 0 is 15 dB under the voice
 
 
 def test_to_end_holds_after_the_phrase(setup):
@@ -236,3 +236,13 @@ def test_the_end_card_starts_where_the_page_starts_it():
     # 0.2 s before the cut take ends, as the page and the mix place it, not before the last word's time
     cut = {"words": [{"text": "now.", "start": 9.0, "end": 9.4}], "duration": 9.95}
     assert plan.card_start(cut) == 9.75
+
+
+def test_an_emphasis_star_pair_may_not_span_two_lines(setup):
+    ok = {"lines": ["You don't have to wait"], "from": "you don't have to wait", "to": "for things to get worse"}
+    split = {"lines": ["*in six weeks you", "can actually do it again.*"], "from": "in six weeks", "to": "do it again"}
+    job = setup(headings=[ok, split])
+    errs = errors_of(job)
+    assert ("Heading 2, line 1 opens an italic with * but doesn't close it. Each line needs its own pair." in errs)
+    assert "Heading 2, line 2 closes an italic with * that was never opened. Each line needs its own pair." in errs
+    assert not any("Heading 1" in e for e in errs)

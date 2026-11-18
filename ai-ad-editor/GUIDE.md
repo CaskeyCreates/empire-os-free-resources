@@ -4,7 +4,7 @@ If you run ads for clients, you know how this goes. They send you a video of the
 
 This guide sets up Claude to do that edit for you. You put the video in a folder, you tell Claude "edit this into an ad", and you get three finished ads back: 9:16 for Reels and Stories, 4:5 for the feed, and 1:1 square. Each one has the dead bits cut out, captions timed to every word in your client's own colours and fonts, real B-roll on the lines that need it, a music bed sitting under the voice, and the offer on the first frame.
 
-You don't need to code. You'll install a few things (Claude does most of it for you), open two free accounts, and then you just talk to Claude.
+You don't need to code. You'll install a few things (Claude does most of it for you), open an ElevenLabs account and a free Pixabay account, and then you just talk to Claude.
 
 **Two ways to use this guide.** Follow the steps yourself, or paste this whole guide into Claude Code and say "walk me through this, one step at a time". Either works.
 
@@ -62,9 +62,11 @@ You'll paste these into a file in Step 5, not into the chat.
 
 In Claude Code, paste this and send it:
 
-> Set up the AI Ad Editor for me from https://github.com/CaskeyCreates/empire-os-free-resources. Put it in a folder called "AI Ad Editor" in my Documents folder. Install whatever it needs that I don't have yet: Git, uv, ffmpeg and Node.js (the LTS version). Then go into its `ai-ad-editor` folder, run `uv sync`, copy `.env.example` to `.env`, and run `uv run adeditor doctor --fix`. Fix anything the doctor reports, except the two keys, which I'll add myself. Before each step, tell me in plain words what you're about to do.
+> Set up the AI Ad Editor for me from https://github.com/CaskeyCreates/empire-os-free-resources. Clone it into my Documents folder. Install whatever it needs that I don't have yet: Git, uv, ffmpeg and Node.js (the LTS version). Then go into its `ai-ad-editor` folder, run `uv sync`, copy `.env.example` to `.env`, and run `uv run adeditor doctor --fix`. Fix anything the doctor reports, except the two keys, which I'll add myself. Before each step, tell me in plain words what you're about to do.
 
 Claude will ask before it installs anything. Say yes to each step. It takes about 5 to 15 minutes, mostly downloads.
+
+When it's done, the tool lives in `Documents/empire-os-free-resources/ai-ad-editor`. That's the folder the rest of this guide calls `ai-ad-editor`.
 
 ## Step 5. Add your keys
 
@@ -83,7 +85,7 @@ Then, in Claude Code, open the `ai-ad-editor` folder (in the desktop app, choose
 
 > Run the doctor.
 
-Every line should say ok. If one doesn't, it tells you what to do.
+Every line should say ok. If you haven't added a Pixabay key, the B-roll line says warn: you can still make ads, just without stock B-roll. If any other line doesn't say ok, it tells you what to do.
 
 **From now on, always open Claude Code in the `ai-ad-editor` folder.** That's how Claude finds its editing instructions.
 
@@ -101,6 +103,8 @@ Say:
 - Makes their music once, from a mood you describe. If you have a licensed track you'd rather use, give it the file instead.
 - Asks for your yes before anything renders.
 
+If Claude says it couldn't read their site, give it another page of the same site, like their About page. Or just tell it their main colour and accent colour. If it didn't find their logo, drop the logo file (PNG or SVG) into the brand folder it names; without one, the end card shows their name instead.
+
 ## Step 7. Make your first ad
 
 Put your client's video in `ai-ad-editor/clients/<client>/raw/`. If your client uploads to a shared Google Drive folder, you can make that folder sync to your computer with Google Drive for desktop and point it there.
@@ -111,12 +115,12 @@ Then say:
 
 Claude will:
 
-1. Transcribe it and show you the retakes and "um"s it wants to cut. Say yes, or tell it to keep any of them.
+1. Transcribe it, read it line by line, and show you the retakes, false starts and "um"s it wants to cut, including any background talk before or after the take. Say yes, or tell it to keep any of them.
 2. Cut it, then check every word you kept is still there. If two words ran together at a cut, it tells you the time so you can listen.
 3. Plan the ad: the offer up front, up to two headings in your client's own words, the words to highlight, and B-roll for the lines that name something you can film. It looks at every B-roll option before picking.
 4. Render all three ratios, check them, and look at the stills itself before telling you it's done.
 
-On our Mac, a 40 second take came back as three finished ads in about 4 minutes. Longer videos take longer.
+On our Mac, a 40 second take came back as three finished ads in about 3 to 4 minutes. Longer videos take longer.
 
 ## Step 8. Give notes
 
@@ -137,7 +141,7 @@ Claude changes just that, renders again, checks it and tells you what changed.
 Your ads are in `ai-ad-editor/clients/<client>/ads/<video name>/`:
 
 - the three MP4s, named by ratio
-- `review.html`, the review sheet, with the credits for every B-roll clip
+- `review.html`, the review sheet, with the checks it ran and the credits for any B-roll it used
 
 The footage comes from Pixabay, so you don't have to credit it in the ad. Keep the review sheet with the project in case anyone asks where a clip came from.
 
@@ -151,7 +155,7 @@ Say "run the doctor" first. It checks every install and both keys and tells you 
 | ffmpeg or Node.js isn't found | Ask Claude to install it, then run the doctor again. |
 | "This video has no sound we can hear" | The video's sound is missing or silent. Check the mic in the original. |
 | "Listen at 0:12" after a cut | Play that moment. If every word is there, tell Claude, and it records your yes. If a word is clipped, tell Claude which, and it puts the cut back. |
-| The music can't be heard, or it's too loud | Tell Claude "music louder" or "music quieter". |
+| The music is too loud or too quiet | Tell Claude "music louder" or "music quieter". It sits about 15 dB under the voice and can move 3 dB either way; past that it would fight the voice or vanish on a phone. |
 
 ## Want us to do it for you?
 

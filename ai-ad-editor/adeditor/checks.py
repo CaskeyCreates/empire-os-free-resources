@@ -246,8 +246,10 @@ def _bed(job: Job, cut: dict, entries: dict) -> Check:
     if lo <= median <= hi:
         return Check("Music under the voice", True, f"The music sits {median:.1f} dB under the voice.")
     side = "too loud under the voice" if median < lo else "too quiet to hear on a phone"
+    more = (" The mix lifts a very quiet music file by at most 12 dB by itself, so try a louder music file."
+            if median > hi else "")
     return Check("Music under the voice", False, f"{median:.1f} dB under the voice.",
-                 [f"The music sits {median:.1f} dB under the voice, which is {side}; it should be 12 to 18 dB."])
+                 [f"The music sits {median:.1f} dB under the voice, which is {side}; it should be 12 to 18 dB.{more}"])
 
 
 def _file(ratio: str, ad: Path, entry: dict) -> Check:
@@ -398,6 +400,8 @@ def write_review(job: Job, report: Report, cut: dict) -> Path:
         froms = ", ".join(f'<a href="{stock.SOURCES[s][1]}">{stock.SOURCES[s][0]}</a>' for s in stock.SOURCES if s in used)
         where = f"Videos from {froms}. " if froms else ""
         credits = _section("Credits", f'<ul>\n{lines}\n</ul>\n<p>{where}Keep these credits with the ads when you post them.</p>')
+    else:
+        credits = _section("Credits", "<p>No B-roll in this ad.</p>")
     page = Template(TEMPLATE.read_text(encoding="utf-8")).substitute(
         title=esc(job.video.stem), summary_class="pass" if ok else "fail", summary=summary, checks=checks,
         joins=joins, warnings=layout_note + warnings, stills=stills, credits=credits)

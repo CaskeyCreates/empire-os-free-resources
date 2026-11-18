@@ -39,6 +39,8 @@ $font_faces
       /* The end card's words and logo sit straight on the card, so on a light card the logo multiplies away its own white box. */
       #endHead { z-index: auto; }
       #endLogo { display: block; margin: 0 auto calc(76px * $sc); width: calc(560px * $sc); height: calc(180px * $sc); object-fit: contain;$logo_blend }
+      /* No logo: the client's name takes its place in the display font. */
+      #endLogo.wordmark { width: auto; height: auto; font-family: $display, serif; font-size: calc(72px * $sc); line-height: 1.1; color: $primary; letter-spacing: -0.025em; white-space: nowrap; }
       .btn { display: inline-block; margin-top: calc(46px * $sc); padding: calc(20px * $sc) calc(64px * $sc) calc(22px * $sc);
         border-radius: 999px; background: $primary; color: $paper; font-family: $display, serif; font-size: calc(40px * $sc); letter-spacing: -0.01em; }
 $synthetic

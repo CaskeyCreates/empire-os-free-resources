@@ -39,7 +39,7 @@ def test_bed_sits_about_15_db_under(tmp_path, take):
     got = mix.mix(voice, pink(tmp_path, 40), silent, out, duration, speech - 0.2, None,
                   stems_dir=tmp_path / "mix", words=tone_words(PATTERN))
     under = mix.bed_under_voice(got["voice_stem"], got["bed_stem"], tone_words(PATTERN))
-    assert 12 <= under["median_db"] <= 18
+    assert under["median_db"] == pytest.approx(15, abs=0.5)
     assert got["bed_median_db"] == under["median_db"]
     assert under["by_30s"] and all(12 <= v <= 18 for v in under["by_30s"] if v is not None)
     lufs, peak = mix.measure(out)
@@ -122,3 +122,66 @@ def test_silent_bed_readings_are_ignored_and_an_all_silent_bed_is_not_measurable
 
     monkeypatch.setattr(mix, "momentary", readings([(t, -inf) for t, _ in voice]))
     assert mix.bed_under_voice("voice", "bed", words) == {"median_db": None, "by_30s": []}
+
+
+def brown(tmp_path, seconds, amplitude, name="bed2.mp3"):
+    out = tmp_path / name
+    media.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+               f"anoisesrc=color=brown:amplitude={amplitude}:duration={seconds}:sample_rate=48000:seed=7",
+               "-af", "tremolo=f=0.4:d=0.6", "-ac", "2", "-c:a", "libmp3lame", "-q:a", "2", str(out)])
+    return out
+
+
+@pytest.mark.parametrize("make", [lambda p: pink(p, 40), lambda p: brown(p, 40, 0.9), lambda p: brown(p, 40, 0.05)])
+def test_the_bed_is_levelled_to_15_db_under_whatever_its_loudness(tmp_path, take, make):
+    voice, silent, speech, duration = take
+    got = mix.mix(voice, make(tmp_path), silent, tmp_path / "ad.mp4", duration, speech - 0.2, None,
+                  stems_dir=tmp_path / "mix", words=tone_words(PATTERN))
+    assert got["bed_median_db"] == pytest.approx(15, abs=0.5)
+
+
+@pytest.mark.parametrize("offset, expected", [(-3, 18), (3, 12)])
+def test_the_offset_moves_the_bed_from_15_quieter_when_negative(tmp_path, take, offset, expected):
+    voice, silent, speech, duration = take
+    got = mix.mix(voice, pink(tmp_path, 40), silent, tmp_path / "ad.mp4", duration, speech - 0.2, None, offset,
+                  stems_dir=tmp_path / "mix", words=tone_words(PATTERN))
+    assert got["bed_median_db"] == pytest.approx(expected, abs=0.6)
+
+
+def _spy(monkeypatch, readings):
+    gains, seq = [], iter(readings)
+    real = mix._bed_chain
+    monkeypatch.setattr(mix, "_bed_chain", lambda spans, d, e, gain: gains.append(gain) or real(spans, d, e, gain))
+    monkeypatch.setattr(mix, "bed_under_voice", lambda v, b, w: {"median_db": next(seq), "by_30s": []})
+    return gains
+
+
+def test_a_nearly_silent_bed_is_lifted_by_at_most_12_db_and_says_so(tmp_path, take, monkeypatch):
+    voice, silent, speech, duration = take
+    gains = _spy(monkeypatch, [45.0, 31.0])
+    got = mix.stems(voice, pink(tmp_path, 40), duration, speech - 0.2, None, out_dir=tmp_path / "mix",
+                    words=tone_words(PATTERN))
+    assert gains == [0.0, 12.0] and got["capped"] is True and got["median_db"] == 31.0
+    gains = _spy(monkeypatch, [20.0, 15.0])
+    got = mix.stems(voice, pink(tmp_path, 40), duration, speech - 0.2, None, 1.0, out_dir=tmp_path / "mix",
+                    words=tone_words(PATTERN))
+    assert gains == [0.0, 6.0] and got["capped"] is False and got["median_db"] == 15.0
+
+
+def test_a_bed_that_cannot_be_measured_gets_only_the_offset(tmp_path, take, monkeypatch):
+    voice, silent, speech, duration = take
+    gains = _spy(monkeypatch, [None])
+    got = mix.stems(voice, pink(tmp_path, 40), duration, speech - 0.2, None, 2.0, out_dir=tmp_path / "mix",
+                    words=tone_words(PATTERN))
+    assert gains == [0.0, 2.0] and got["median_db"] is None and got["capped"] is False
+    assert got["bed"].is_file()
+
+
+def test_mix_measures_the_bed_once_per_ratio(tmp_path, take, monkeypatch):
+    voice, silent, speech, duration = take
+    calls = []
+    real = mix.bed_under_voice
+    monkeypatch.setattr(mix, "bed_under_voice", lambda *a: calls.append(1) or real(*a))
+    got = mix.mix(voice, pink(tmp_path, 40), silent, tmp_path / "ad.mp4", duration, speech - 0.2, None,
+                  stems_dir=tmp_path / "mix", words=tone_words(PATTERN))
+    assert len(calls) == 2 and got["bed_median_db"] == pytest.approx(15, abs=0.5)  # level, then the final reading

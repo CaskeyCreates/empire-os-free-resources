@@ -15,6 +15,8 @@ Ask the client's name, then their website address. Make the folder name from the
 uv run adeditor client new <client> <site address> --name "<Client Name>"
 ```
 
+If it says "We couldn't read their site", the client's folder is still made, with plain colours (black and white with a blue accent) and fonts. Say that plainly, then ask for another page of their site, like their About page, and run the same command again, or go to the next step and set their colours by hand.
+
 If it says a key is missing, tell the person to type it into the `.env` file in this folder themselves, then run it again.
 
 ## 2. The look
@@ -23,7 +25,7 @@ Read `clients/<client>/brand/kit.json`. Tell the person plainly what we took: th
 
 If the person has their client's own licensed font files (.woff2, .woff, .ttf or .otf), they go in `clients/<client>/brand/fonts/`. Then, in `kit.json`, set that role's `family` to the font's name and its `files` to those files, like `"regular": "fonts/their-font-regular.ttf"`, with `null` for a face that has no file. We never download a font from their site, so only use files the person gives you.
 
-Tell them to open `clients/<client>/brand/swatch.html` in their browser and ask: "Does that look like their brand?" If no logo was found, ask them to drop `logo.png` or `logo.svg` into `clients/<client>/brand/`, then set `"logo"` in `kit.json` to that file name.
+Tell them to open `clients/<client>/brand/swatch.html` in their browser and ask: "Does that look like their brand?" If no logo was found, tell them the end card will carry the client's name in its place until they have one, and ask them to drop `logo.png` or `logo.svg` into `clients/<client>/brand/`, then set `"logo"` in `kit.json` to that file name.
 
 If they say the colours look wrong, ask for the brand's main colour as a hex code, like #1A1A1A, then ask for its accent colour the same way. Never edit the colours in `kit.json` by hand; this works out the rest and checks the captions will read:
 

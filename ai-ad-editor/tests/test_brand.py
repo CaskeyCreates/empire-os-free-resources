@@ -338,3 +338,142 @@ def test_a_single_caption_colour_reads_in_the_singular(monkeypatch):
     assert "caption words (paper #5A5A5A) on the caption plate" in said and ") read at" in said
     assert "word being said (highlight #203040) on the caption plate" in said and ") reads at" in said
     assert "and needs at least" in said
+
+
+# fresh-user fixes
+
+class _Reply:
+    def __init__(self, size):
+        self.size, self.headers = size, {"Content-Type": "text/html"}
+
+    def read(self, n=-1):
+        return b"x" * min(n if n >= 0 else self.size, self.size)
+
+    def geturl(self):
+        return "https://big.test/"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_a_page_over_five_megabytes_is_read_but_a_stylesheet_keeps_its_cap(monkeypatch):
+    monkeypatch.setattr(brand.urllib.request, "urlopen", lambda req, timeout: _Reply(6 << 20))
+    body, _, _ = brand.http_get("https://big.test/", "text/html")
+    assert len(body) == 6 << 20
+    with pytest.raises(ValueError, match="bigger than 4 MB"):
+        brand.http_get("https://big.test/a.css", "text/css")
+    monkeypatch.setattr(brand.urllib.request, "urlopen", lambda req, timeout: _Reply(16 << 20))
+    with pytest.raises(ValueError, match="bigger than 15 MB"):
+        brand.http_get("https://big.test/", "text/html")
+
+
+def test_an_unreadable_site_still_makes_a_default_kit(root, web):
+    def blocked(url, accept="*/*"):
+        if "northbank.test" in url:
+            raise ValueError("https://northbank.test/ is bigger than 15 MB")
+        return web(url, accept)
+    problems = []
+    kit = brand.build("acme", "https://northbank.test/", fetch=blocked, problems=problems)
+    assert kit["colours"] == {"primary": "#111111", "deep": brand.darken_to("#111111", 0.06).upper(),
+                              "paper": "#FFFFFF", "accent": "#2563EB",
+                              "accent_dark": kit["colours"]["accent_dark"], "highlight": kit["colours"]["highlight"],
+                              "ink": "#111111"}
+    assert brand.contrast(kit["colours"]["accent_dark"], "#FFFFFF") >= 4.5
+    assert kit["fonts"]["display"]["family"] == "Libre Baskerville" and kit["fonts"]["body"]["family"] == "Inter"
+    assert kit["logo"] is None and kit["approved"] is False
+    assert (root / "clients/acme/brand/kit.json").is_file() and (root / "clients/acme/brand/swatch.html").is_file()
+    assert problems and "bigger than 15 MB" in problems[0]
+
+
+def test_client_new_says_plainly_when_it_could_not_read_the_site(root, web, monkeypatch, capsys):
+    def blocked(url, accept="*/*"):
+        if "northbank.test" in url:
+            raise OSError("HTTP Error 403: Forbidden")
+        return web(url, accept)
+    monkeypatch.setattr(brand, "http_get", blocked)
+    assert cli.main(["client", "new", "acme", "https://northbank.test/"]) == 0
+    out = capsys.readouterr().out
+    assert "We couldn't read their site (HTTP Error 403: Forbidden)." in out
+    assert "adeditor client colours acme --primary ... --accent ..." in out
+    assert "About page" in out and "logo" in out
+
+
+def _roles(css, meta=None):
+    return brand.derive_roles(css, meta or {})
+
+
+def test_framework_default_colours_are_not_the_brand():
+    css = (":root{--bs-primary:#0d6efd;--bs-danger:#dc3545;--brand-main:#7A2E3B}"
+           "body{color:#2A2A2A;background:#FFFFFF}.btn{background:#0d6efd}.a{color:#0d6efd}.b{color:#0099FF}")
+    roles = _roles(css)
+    assert roles["primary"] == "#7A2E3B"
+    assert roles["accent"] not in ("#0D6EFD", "#0099FF", "#DC3545")
+    for default in ("#0d6efd", "#6610f2", "#6f42c1", "#d63384", "#dc3545", "#fd7e14", "#ffc107", "#198754",
+                    "#20c997", "#0dcaf0", "#007bff", "#3b82f6", "#2563eb", "#0099ff", "#0073aa", "#2271b1"):
+        assert default in brand.FRAMEWORK_DEFAULTS
+
+
+def test_a_framework_default_is_used_only_when_nothing_else_is_left():
+    roles = _roles(":root{--bs-primary:#0d6efd}.a{color:#0d6efd}")
+    assert roles["primary"] == "#0D6EFD"
+
+
+def test_framer_blue_is_skipped_on_a_framer_site():
+    css = ":root{--framer-primary:#0099ff}.a{color:#0099ff}.b{background:#C2410C}.b2{background:#C2410C}"
+    assert _roles(css)["primary"] == "#C2410C"
+
+
+def test_ink_is_a_dark_everyday_colour_never_a_brand_colour():
+    css = (":root{--bs-primary:#0d6efd}body{color:#0d6efd;background:#fff}"
+           ".a{color:#1E4D6B}.b{color:#212529}")
+    ink = _roles(css)["ink"]
+    assert brand.rel_luminance(ink) <= 0.1
+    assert ink == "#212529"
+    only_brand = _roles("body{color:#1E4D6B;background:#fff}.a{background:#1E4D6B}")
+    assert only_brand["ink"] == "#1A1A1A"
+
+
+def test_the_swatch_never_carries_example_client_words(kit, root):
+    swatch = root / "clients/northbank/brand/swatch.html"
+    text = swatch.read_text()
+    assert "Six weeks" not in text and "moving freely" not in text
+    assert "Your offer line goes here" in text
+    brand.set_lockup("northbank", callout="For desk workers", offer=["Back pain gone in 8 weeks"], detail=None)
+    text = brand.write_swatch("northbank", brand.read("northbank")).read_text()
+    assert "Back pain gone in 8 weeks" in text and "Your offer line goes here" not in text
+
+
+def test_approve_warns_when_the_kit_has_no_logo(kit, capsys):
+    path = brand.kit_path("northbank")
+    saved = json.loads(path.read_text())
+    saved["logo"] = None
+    path.write_text(json.dumps(saved))
+    assert cli.main(["client", "approve", "northbank"]) == 0
+    out = capsys.readouterr().out
+    assert "Warning: there's no logo" in out and "end card" in out and "clients/northbank/brand/" in out
+    saved["logo"] = "logo.png"
+    path.write_text(json.dumps(saved))
+    assert cli.main(["client", "approve", "northbank"]) == 0
+    assert "no logo" not in capsys.readouterr().out
+
+
+def test_a_failed_re_run_leaves_a_good_kit_untouched(kit, root, web, monkeypatch, capsys):
+    brand.set_colours("northbank", primary="#112233", accent="#AA5500")
+    before = (root / "clients/northbank/brand/kit.json").read_text()
+
+    def blocked(url, accept="*/*"):
+        if "northbank.test" in url:
+            raise OSError("HTTP Error 403: Forbidden")
+        return web(url, accept)
+    problems = []
+    got = brand.build("northbank", SITE, fetch=blocked, problems=problems)
+    assert (root / "clients/northbank/brand/kit.json").read_text() == before
+    assert got["colours"]["primary"] == "#112233" and "403" in problems[0]
+    monkeypatch.setattr(brand, "http_get", blocked)
+    assert cli.main(["client", "new", "northbank", SITE]) == 0
+    out = capsys.readouterr().out
+    assert "couldn't read their site" in out and "existing kit is unchanged" in out
+    assert (root / "clients/northbank/brand/kit.json").read_text() == before

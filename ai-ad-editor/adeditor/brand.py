@@ -31,6 +31,8 @@ from adeditor.cli import command
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/131.0.0.0 Safari/537.36")
 MAX_BYTES = 4 << 20
+# A modern site's home page can be 5 MB of HTML alone; stylesheets and images keep MAX_BYTES.
+MAX_HTML_BYTES = 15 << 20
 MAX_SHEETS = 24
 SLUG = re.compile(r"^[a-z0-9-]+$")
 GENERIC_FONTS = {"serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-sans-serif",
@@ -46,9 +48,20 @@ FACES = {"regular": ("normal", 400), "italic": ("italic", 400), "bold": ("normal
 # A font file's format by its extension, for @font-face: Google's woff2, or the person's own licensed files.
 FONT_FORMATS = {".woff2": "woff2", ".woff": "woff", ".ttf": "truetype", ".otf": "opentype"}
 DEEP_MAX_LUMINANCE = 0.06
+INK_MAX_LUMINANCE = 0.1
+INK_MAX_SATURATION = 0.35
+# CSS framework defaults that sit in a site's CSS whether or not the brand chose them: Bootstrap 5's named
+# palette, Bootstrap 4's blue, Tailwind's blue-500 and blue-600, Framer's blue, WordPress's blues.
+FRAMEWORK_DEFAULTS = frozenset({
+    "#0d6efd", "#6610f2", "#6f42c1", "#d63384", "#dc3545", "#fd7e14", "#ffc107", "#198754", "#20c997", "#0dcaf0",
+    "#007bff", "#3b82f6", "#2563eb", "#0099ff", "#0073aa", "#2271b1"})
 MIN_CONTRAST = 4.5
 DEFAULT_PAPER = "#F7F5EF"
 DEFAULT_INK = "#1A1A1A"
+# The plain look a client gets when their site can't be read.
+PLAIN = {"primary": "#111111", "accent": "#2563EB", "paper": "#FFFFFF", "ink": "#111111"}
+KEPT = "kept"  # appended to `problems` when the existing kit was left as it was
+PLAIN_FONTS = {"display": "Libre Baskerville", "body": "Inter"}
 
 
 def font_format(name) -> str:
@@ -143,20 +156,23 @@ def set_lockup(client: str, callout: str, offer: list[str], detail: str | None, 
     kit["lockup"] = {"callout": callout.strip(), "offer": offer, "detail": (detail or "").strip() or None,
                      "button": (button or "Learn more").strip()}
     kit["approved"] = False
-    return save(client, kit)
+    save(client, kit)
+    write_swatch(client, kit)
+    return kit
 
 
 # reading their site
 
 def http_get(url: str, accept: str = "*/*") -> tuple[bytes, str, str]:
-    """(body, content type, final url). Only http and https, at most MAX_BYTES."""
+    """(body, content type, final url). Only http and https, at most MAX_BYTES (MAX_HTML_BYTES for a page)."""
     if not re.match(r"^https?://", url):
         raise ValueError(f"Not a web address: {url}")
+    cap = MAX_HTML_BYTES if accept.startswith("text/html") else MAX_BYTES
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": accept})
     with urllib.request.urlopen(req, timeout=20) as r:
-        body = r.read(MAX_BYTES + 1)
-        if len(body) > MAX_BYTES:
-            raise ValueError(f"{url} is bigger than {MAX_BYTES >> 20} MB")
+        body = r.read(cap + 1)
+        if len(body) > cap:
+            raise ValueError(f"{url} is bigger than {cap >> 20} MB")
         return body, r.headers.get("Content-Type", ""), r.geturl()
 
 
@@ -315,6 +331,12 @@ def strip_comments(css: str) -> str:
     return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
 
 
+def prefer_real(colours: list[str]) -> list[str]:
+    """The colours without the framework defaults, unless nothing else is left."""
+    real = [c for c in colours if c not in FRAMEWORK_DEFAULTS]
+    return real or colours
+
+
 def pick_colours(css: str, meta: dict) -> dict:
     """The brand's primary, a second brand colour if the site has one, and its everyday colours."""
     css = strip_comments(css)
@@ -328,8 +350,8 @@ def pick_colours(css: str, meta: dict) -> dict:
     theme = norm_hex(meta.get("theme-color", "")) if meta.get("theme-color") else None
     theme = theme if theme and hls(theme)[2] > 0.25 else None
     firsts = [c for n, c in named if "primary" in n] + [c for n, c in named if "accent" not in n] + ([theme] if theme else [])
-    primary = (firsts + saturated + [None])[0]
-    accents = [c for n, c in named if "accent" in n] + saturated
+    primary = (prefer_real(firsts + saturated) + [None])[0]
+    accents = prefer_real([c for n, c in named if "accent" in n] + saturated)
     accent = next((c for c in accents if primary and c != primary and abs(hls(c)[0] - hls(primary)[0]) > 0.04), None)
     base = []
     for selector, block in RULE.findall(css):
@@ -350,7 +372,8 @@ def derive_roles(css: str, meta: dict) -> dict:
     lights = [c for c in everyday if rel_luminance(c) > 0.8]
     paper = max(lights, key=rel_luminance) if lights else DEFAULT_PAPER
     accent = found["accent"] or shade(primary, 0.15)
-    inks = [c for c in everyday if contrast(c, paper) >= MIN_CONTRAST and rel_luminance(c) < 0.2]
+    inks = [c for c in everyday if contrast(c, paper) >= MIN_CONTRAST and rel_luminance(c) <= INK_MAX_LUMINANCE
+            and hls(c)[2] < INK_MAX_SATURATION and c not in FRAMEWORK_DEFAULTS]
     ink = inks[0] if inks else DEFAULT_INK
     return complete_roles(primary, accent, paper, ink)
 
@@ -581,14 +604,25 @@ def find_logo(page: Page, base: str, fetch) -> tuple[bytes, str] | None:
 
 # the kit
 
-def build(client: str, url: str, name: str | None = None, fetch=None) -> dict:
-    """Read the client's site and write brand/kit.json and brand/swatch.html. The kit is unapproved."""
+def build(client: str, url: str, name: str | None = None, fetch=None, problems: list | None = None) -> dict:
+    """Read the client's site and write brand/kit.json and brand/swatch.html. The kit is unapproved.
+    When the site can't be read (too big, blocked, 404, no network) the kit gets plain defaults instead, and
+    the reason is appended to `problems` so the caller can say so."""
     check_slug(client)
     fetch = fetch or http_get
     if not re.match(r"^https?://", url or ""):
         url = "https://" + str(url or "").strip().lstrip("/")
-    body, _, final = fetch(url, "text/html")
     out = brand_dir(client)
+    try:
+        body, _, final = fetch(url, "text/html")
+    except Exception as exc:
+        if problems is not None:
+            problems.append(str(exc))
+        if kit_path(client).is_file():  # a kit already exists: a failed re-run never replaces it
+            if problems is not None:
+                problems.append(KEPT)
+            return read(client)
+        return build_plain(client, url, name, fetch, out)
     out.mkdir(parents=True, exist_ok=True)
     page = Page()
     page.feed(body.decode("utf-8", "replace"))
@@ -626,8 +660,23 @@ def build(client: str, url: str, name: str | None = None, fetch=None) -> dict:
 
     host = urllib.parse.urlparse(final).hostname or client
     title = " ".join((name or page.meta.get("og:site_name") or page.title or host.removeprefix("www.")).split())[:80]
+    return finish_kit(client, out, title, final, colours, fonts, logo)
+
+
+def build_plain(client: str, url: str, name: str | None, fetch, out: Path) -> dict:
+    """The kit for a site we couldn't read: plain colours, Libre Baskerville and Inter, no logo."""
+    out.mkdir(parents=True, exist_ok=True)
+    cache: dict = {}
+    fonts = {role: choose_font(family, None, fetch, out, cache) for role, family in PLAIN_FONTS.items()}
+    host = urllib.parse.urlparse(url).hostname or client
+    title = " ".join((name or host.removeprefix("www.")).split())[:80]
+    colours = complete_roles(PLAIN["primary"], PLAIN["accent"], PLAIN["paper"], PLAIN["ink"])
+    return finish_kit(client, out, title, url, colours, fonts, None)
+
+
+def finish_kit(client: str, out: Path, title: str, site: str, colours: dict, fonts: dict, logo: str | None) -> dict:
     kit = {
-        "name": title, "site": final, "colours": colours, "fonts": fonts, "logo": logo,
+        "name": title, "site": site, "colours": colours, "fonts": fonts, "logo": logo,
         "lockup": {"callout": "", "offer": [""], "detail": None, "button": "Learn more"},
         "keyterms": [], "music": None, "music_bpm": None, "approved": False,
     }
@@ -660,7 +709,8 @@ def write_swatch(client: str, kit: dict) -> Path:
     notes = "".join(f"<p class=note>{html.escape(f['note'])}</p>" for f in kit["fonts"].values() if f.get("note"))
     logo = (f"<img class=logo src='{html.escape(kit['logo'])}' alt='logo'>" if kit["logo"]
             else "<p class=note>No logo found.</p>")
-    sample = html.escape(f"{kit['name']}: Six weeks to moving freely.")
+    offer = next((line.strip() for line in (kit.get("lockup") or {}).get("offer", []) if line and line.strip()), "")
+    sample = html.escape(f"{kit['name']}: {offer or 'Your offer line goes here'}")
     body_family = html.escape(kit["fonts"]["body"]["family"])
     families = " · ".join(
         f"{role}: {font['family']} ({'matched from ' + font['matched_from'] if font['source'] == 'matched' else font['source']})"
@@ -723,8 +773,19 @@ def client_cmd(ns):
 
     try:
         if ns.action == "new":
-            kit = build(ns.client, ns.url, name=ns.name)
-            print(f"Read {kit['name']} from {kit['site']}.")
+            problems: list = []
+            kit = build(ns.client, ns.url, name=ns.name, problems=problems)
+            if problems:
+                print(f"We couldn't read their site ({problems[0]}). Set their colours with `adeditor client colours "
+                      f"{ns.client} --primary ... --accent ...`, drop their logo in the brand folder, or try another "
+                      "page of their site, like their About page.")
+                if KEPT in problems:
+                    problems.remove(KEPT)
+                    print(f"{kit['name']}'s existing kit is unchanged.")
+                else:
+                    print(f"Made {kit['name']}'s kit with plain colours and fonts for now.")
+            else:
+                print(f"Read {kit['name']} from {kit['site']}.")
             print(f"Look at clients/{ns.client}/brand/swatch.html, then set the lockup and run: adeditor client approve {ns.client}")
             for font in kit["fonts"].values():
                 if font["note"]:
@@ -746,6 +807,9 @@ def client_cmd(ns):
             lockup = kit["lockup"]
             if not lockup["callout"].strip() or not any(line.strip() for line in lockup["offer"]):
                 print(f"Warning: the lockup is empty. Set it with: adeditor client lockup {ns.client} --callout ... --offer ...")
+            if not kit.get("logo"):
+                print("Warning: there's no logo, so the end card will carry the client's name in its place. Put "
+                      f"logo.png or logo.svg in clients/{ns.client}/brand/ and set \"logo\" in kit.json to use theirs.")
         elif ns.action == "colours":
             kit = set_colours(ns.client, ns.primary, ns.accent, ns.paper, ns.ink)
             print("The colours are set: " + ", ".join(f"{role} {c}" for role, c in kit["colours"].items()) + ".")

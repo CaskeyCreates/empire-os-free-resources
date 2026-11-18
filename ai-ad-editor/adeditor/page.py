@@ -314,11 +314,16 @@ def _heading_html(n: int, h: dict, rows: list[tuple[str, str, str, float]], top:
 
 
 def _end_html(lockup: dict, offer_rows: list[tuple[str, str, str, float]], logo: str | None, alt: str, top,
-              start: float, length: float) -> tuple[str, list[str]]:
+              start: float, length: float, name: tuple[str, str] | None = None) -> tuple[str, list[str]]:
+    """The end card. With no logo, `name` (the client's name, its font-size style) sits in the display font
+    where the logo would, so the card never looks empty."""
     items, rows = [], []
     if logo:
         items.append("#endLogo")
         rows.append(f'          <img id="endLogo" src="assets/{logo}" alt="{html.escape(alt)}" />')
+    elif name and name[0].strip():
+        items.append("#endLogo")
+        rows.append(f'          <div id="endLogo" class="wordmark"{name[1]}>{html.escape(name[0])}</div>')
     items += [f"#{i}" for _, i, _, _ in offer_rows]
     rows += [f"          {row}" for _, _, row, _ in offer_rows]
     items.append("#endBtn")
@@ -440,8 +445,11 @@ def build(job: Job, ratio: str) -> Path:
     lockup_block, lockup_items = _lockup_html(lock_rows, text["lock"], lock_end, win.shrink)
     heading_blocks = [_heading_html(n, h, rows, text["heading"], win.shrink)
                       for n, (h, rows) in enumerate(zip(headings, heading_rows), 1)]
+    name = " ".join(str(kit.get("name") or "").split())
+    name_size = 72 * sc
     end_block, end_items = _end_html(resolved["lockup"], _offer_rows(resolved["lockup"], "end", m, sc, 66 * sc), logo, alt,
-                                     text["end_top"], end0, resolved["end_card"])
+                                     text["end_top"], end0, resolved["end_card"],
+                                     (name, _sized(m.fit("h", name, name_size), name_size)))
     idle = _idle(text_times, end0) if win.mode != "fade" else []
     broll_html = "\n".join(
         f'      <div id="bw{b["k"]}" class="bw" data-layout-allow-occlusion data-layout-allow-overflow>'

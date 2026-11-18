@@ -31,7 +31,7 @@ Times move, so run `plan check` next.
 
 ### Music lower or louder
 
-Set `"bed_offset_db"` in `plan.json`. A positive number is louder, a negative number lower, and it can only go between -6 and 6. Try 2 or 3 at a time. The check wants the music 12 to 18 dB under the voice and will say if the note went too far; if it can't hear the music at all, move the number back toward 0. If the music is more than 18 dB under the voice (too quiet), use a positive number, up to 6.
+Set `"bed_offset_db"` in `plan.json`. The mix levels the music to 15 dB under the voice by itself, and 0 means exactly that. A positive number is louder (3 is 12 dB under), a negative number quieter (-3 is 18 dB under), and it can only go between -3 and 3. Try 1 or 2 at a time. The check wants the music 12 to 18 dB under the voice and will say if the note went too far; if it can't hear the music at all, check the music file has sound in it.
 
 ### Swap the shot
 
